@@ -86,7 +86,7 @@ class OverlayService : Service() {
             ACTION_UPDATE_CONFIG -> {
                 val presetName = intent.getStringExtra(EXTRA_FELT_PRESET)
                 val maxBounces = intent.getIntExtra(EXTRA_MAX_BOUNCES, 3)
-                val showDebug = intent.getBooleanExtra(EXTRA_SHOW_DEBUG, false)
+                val showDebug = intent.getBooleanExtra(EXTRA_SHOW_DEBUG, true)
                 val alpha = intent.getFloatExtra(EXTRA_SMOOTHING_ALPHA, 0.35f)
 
                 if (presetName != null) {
@@ -120,7 +120,10 @@ class OverlayService : Service() {
 
     private fun initOverlayView() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        overlayView = OverlayCanvasView(this)
+        overlayView = OverlayCanvasView(this).apply {
+            showDebugBounds = true
+            showFps = true
+        }
 
         val layoutParams = WindowManager.LayoutParams().apply {
             type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -146,13 +149,26 @@ class OverlayService : Service() {
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val mediaProjection: MediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
 
-        val metrics = DisplayMetrics()
-        windowManager?.defaultDisplay?.getRealMetrics(metrics)
+        val (screenWidth, screenHeight) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager?.currentWindowMetrics?.bounds
+            if (bounds != null && bounds.width() > 0) {
+                Pair(bounds.width(), bounds.height())
+            } else {
+                Pair(1920, 1080)
+            }
+        } else {
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager?.defaultDisplay?.getRealMetrics(metrics)
+            Pair(metrics.widthPixels, metrics.heightPixels)
+        }
+
+        val densityDpi = resources.displayMetrics.densityDpi
 
         captureManager?.stopCapture()
         overlayView?.let { view ->
             captureManager = ScreenCaptureManager(this, mediaProjection, view).apply {
-                startCapture(metrics)
+                startCapture(screenWidth, screenHeight, densityDpi)
             }
         }
     }

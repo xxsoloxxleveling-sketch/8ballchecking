@@ -7,18 +7,18 @@ import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
-import android.util.DisplayMetrics
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import com.pool.guideline.overlay.cv.TableAndBallDetector
 import com.pool.guideline.overlay.cv.TableFeltPreset
 import com.pool.guideline.overlay.physics.TrajectoryPhysicsEngine
 import com.pool.guideline.overlay.physics.TrajectoryResult
-import com.pool.guideline.overlay.physics.Vector2D
 import com.pool.guideline.overlay.ui.OverlayCanvasView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -33,33 +33,44 @@ class ScreenCaptureManager(
 ) {
     private val tag = "ScreenCaptureMgr"
 
-    // Downscaled working resolution for 60fps CV processing
     private val downsampleFactor = 0.5f
     private var processWidth = 960
     private var processHeight = 540
-    private var screenDensity = 1
 
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var handlerThread: HandlerThread? = null
 
     private val detector = TableAndBallDetector(TableFeltPreset.AUTO)
-    private val physicsEngine = TrajectoryPhysicsEngine(maxBounces = 3)
+    private val physicsEngine = TrajectoryPhysicsEngine(maxBounces = 4)
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var isRunning = AtomicBoolean(false)
     private var processingFrame = AtomicBoolean(false)
 
-    fun startCapture(metrics: DisplayMetrics) {
+    fun startCapture(screenWidth: Int, screenHeight: Int, densityDpi: Int) {
         if (isRunning.getAndSet(true)) return
 
-        screenDensity = metrics.densityDpi
-        processWidth = ((metrics.widthPixels * downsampleFactor).toInt() / 16) * 16
-        processHeight = ((metrics.heightPixels * downsampleFactor).toInt() / 16) * 16
+        val sWidth = if (screenWidth > 0) screenWidth else 1920
+        val sHeight = if (screenHeight > 0) screenHeight else 1080
+        val density = if (densityDpi > 0) densityDpi else 320
 
-        overlayView.coordScaleX = metrics.widthPixels.toFloat() / processWidth.toFloat()
-        overlayView.coordScaleY = metrics.heightPixels.toFloat() / processHeight.toFloat()
+        processWidth = ((sWidth * downsampleFactor).toInt() / 16) * 16
+        processHeight = ((sHeight * downsampleFactor).toInt() / 16) * 16
 
-        Log.i(tag, "Starting ScreenCapture: Screen=${metrics.widthPixels}x${metrics.heightPixels}, Process=${processWidth}x${processHeight}")
+        overlayView.coordScaleX = sWidth.toFloat() / processWidth.toFloat()
+        overlayView.coordScaleY = sHeight.toFloat() / processHeight.toFloat()
+        overlayView.showDebugBounds = true
+
+        Log.i(tag, "Starting ScreenCapture: Screen=${sWidth}x${sHeight}, Process=${processWidth}x${processHeight}")
+
+        // Android 14+ MANDATE: Register MediaProjection callback before createVirtualDisplay
+        mediaProjection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(tag, "MediaProjection session stopped")
+                stopCapture()
+            }
+        }, Handler(Looper.getMainLooper()))
 
         imageReader = ImageReader.newInstance(
             processWidth,
@@ -68,40 +79,41 @@ class ScreenCaptureManager(
             2
         )
 
+        handlerThread = HandlerThread("ImageReaderWorkerThread").apply { start() }
+        val workerHandler = Handler(handlerThread!!.looper)
+
         virtualDisplay = mediaProjection.createVirtualDisplay(
             "PoolOverlayCapture",
             processWidth,
             processHeight,
-            screenDensity,
+            density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader!!.surface,
             null,
-            null
+            workerHandler
         )
 
         imageReader!!.setOnImageAvailableListener({ reader ->
             if (!isRunning.get()) return@setOnImageAvailableListener
 
-            // Frame throttling: Drop backed up frames if previous frame is still processing
+            val image = reader.acquireLatestImage()
+            if (image == null) return@setOnImageAvailableListener
+
             if (processingFrame.compareAndSet(false, true)) {
-                val image = reader.acquireLatestImage()
-                if (image != null) {
-                    scope.launch {
-                        try {
-                            processImageFrame(image)
-                        } finally {
-                            image.close()
-                            processingFrame.set(false)
-                        }
+                scope.launch {
+                    try {
+                        processImageFrame(image)
+                    } catch (t: Throwable) {
+                        Log.e(tag, "Frame processing error: ${t.message}")
+                    } finally {
+                        image.close()
+                        processingFrame.set(false)
                     }
-                } else {
-                    processingFrame.set(false)
                 }
             } else {
-                // Drop image to avoid buffer queue overflow
-                reader.acquireLatestImage()?.close()
+                image.close()
             }
-        }, null)
+        }, workerHandler)
     }
 
     private fun processImageFrame(image: Image) {
@@ -110,7 +122,6 @@ class ScreenCaptureManager(
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
 
-        // Zero-allocation frame extraction & detection
         val detection = detector.processFrame(
             buffer = buffer,
             width = image.width,
@@ -119,7 +130,7 @@ class ScreenCaptureManager(
             pixelStride = pixelStride
         )
 
-        if (detection.tableBounds.isValid && detection.cueBall != null && detection.hasValidAim) {
+        if (detection.tableBounds.isValid && detection.cueBall != null) {
             val trajectory = physicsEngine.computeTrajectory(
                 cueBallPos = detection.cueBall.center,
                 aimDirection = detection.aimDirection,
@@ -128,9 +139,6 @@ class ScreenCaptureManager(
                 ballRadius = detection.tableBounds.estimatedBallRadius
             )
             overlayView.updateTrajectory(trajectory, detection.tableBounds)
-        } else if (detection.tableBounds.isValid) {
-            // Still update table bounds for debug rendering even if cue isn't aiming
-            overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds)
         } else {
             overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds)
         }
@@ -151,6 +159,8 @@ class ScreenCaptureManager(
             virtualDisplay = null
             imageReader?.close()
             imageReader = null
+            handlerThread?.quitSafely()
+            handlerThread = null
             mediaProjection.stop()
         } catch (e: Exception) {
             Log.e(tag, "Error during capture teardown: ${e.message}")

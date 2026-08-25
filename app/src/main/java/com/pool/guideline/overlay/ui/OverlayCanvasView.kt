@@ -176,19 +176,6 @@ class OverlayCanvasView @JvmOverloads constructor(
         smoothingFilter.alpha = alpha.coerceIn(0.05f, 1.0f)
     }
 
-    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
-        if (!isTableCalibrated && event.action == android.view.MotionEvent.ACTION_UP) {
-            if (event.y < height * 0.25f) {
-                val intent = android.content.Intent(context, CalibrationActivity::class.java).apply {
-                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
-                }
-                context.startActivity(intent)
-                return true
-            }
-        }
-        return super.onTouchEvent(event)
-    }
-
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
@@ -198,7 +185,7 @@ class OverlayCanvasView @JvmOverloads constructor(
         if (!isTableCalibrated) {
             val midX = width / 2.0f
             val midY = height * 0.15f
-            canvas.drawText("Table not calibrated — Tap here to calibrate", midX, midY, warningTextPaint)
+            canvas.drawText("Table not calibrated — open app or notification to calibrate", midX, midY, warningTextPaint)
             if (showFps) {
                 canvas.drawText("AI Guide FPS: ${currentFps.toInt()}", 40f, 80f, textPaint)
             }

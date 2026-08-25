@@ -131,8 +131,6 @@ class OverlayService : Service() {
             showFps = true
         }
 
-        val isCalibrated = TableBoundsCalibration.getTableBounds(this) != null
-
         val layoutParams = WindowManager.LayoutParams().apply {
             type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -140,17 +138,10 @@ class OverlayService : Service() {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             }
-            // If not calibrated, allow touch events so tapping prompt opens calibration
-            flags = if (!isCalibrated) {
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-            } else {
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-            }
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
 
             format = PixelFormat.TRANSLUCENT
             width = WindowManager.LayoutParams.MATCH_PARENT
@@ -158,33 +149,6 @@ class OverlayService : Service() {
         }
 
         windowManager?.addView(overlayView, layoutParams)
-    }
-
-    fun setOverlayTouchable(touchable: Boolean) {
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            val view = overlayView ?: return@post
-            val wm = windowManager ?: return@post
-            val params = view.layoutParams as? WindowManager.LayoutParams ?: return@post
-            val targetFlags = if (touchable) {
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-            } else {
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-            }
-
-            if (params.flags != targetFlags) {
-                params.flags = targetFlags
-                try {
-                    wm.updateViewLayout(view, params)
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to update view layout: ${e.message}")
-                }
-            }
-        }
     }
 
     private fun startScreenCapture(resultCode: Int, resultData: Intent) {

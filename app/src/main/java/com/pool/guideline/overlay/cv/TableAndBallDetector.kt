@@ -39,8 +39,8 @@ data class DetectionResult(
 )
 
 /**
- * Ultra-fast sub-pixel collinear guideline & aim detection engine for 8-ball clone.
- * Runs in ~2ms per frame, locks onto the 20+ collinear points of the in-game aiming line.
+ * Cue-Anchored Collinear Aiming Engine for 8-ball clone.
+ * Detects the active in-game aiming guideline anchored strictly to the Cue Ball.
  */
 class TableAndBallDetector(
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
@@ -115,10 +115,10 @@ class TableAndBallDetector(
         val tMinY = max(0, (table.yMin + 4).toInt())
         val tMaxY = min(height - 1, (table.yMax - 4).toInt())
 
-        // Step 1: Collect pure white guideline & ball pixels (R>220, G>220, B>220)
+        // Step 1: Collect bright white guideline & ball pixels (R>210, G>210, B>210)
         val clusters = ArrayList<Vector2D>()
         val clusterCounts = ArrayList<Int>()
-        val clusterDistSq = (ballRadius * 1.0f) * (ballRadius * 1.0f)
+        val clusterDistSq = (ballRadius * 1.1f) * (ballRadius * 1.1f)
 
         val step = 2
         for (y in tMinY..tMaxY step step) {
@@ -129,7 +129,7 @@ class TableAndBallDetector(
                 val g = (color shr 8) and 0xFF
                 val b = color and 0xFF
 
-                if (r > 218 && g > 218 && b > 218 && abs(r - g) < 22 && abs(g - b) < 22) {
+                if (r > 208 && g > 208 && b > 208 && abs(r - g) < 25 && abs(g - b) < 25) {
                     var added = false
                     for (i in clusters.indices) {
                         val c = clusters[i]
@@ -150,105 +150,103 @@ class TableAndBallDetector(
             }
         }
 
-        val validCenters = ArrayList<Vector2D>()
-        for (i in clusters.indices) {
-            if (clusterCounts[i] >= 3) {
-                validCenters.add(clusters[i])
-            }
-        }
-
-        if (validCenters.size < 2) {
+        if (clusters.size < 2) {
             return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
         }
 
-        // Step 2: Find the dominant collinear line of dots
-        var bestCollinear: List<Vector2D>? = null
-        var maxCollinearCount = 0
+        // Step 2: Identify Cue Ball Candidates (Solid White 2D Disc)
+        val cueCandidates = ArrayList<Vector2D>()
+        val radInt = (ballRadius * 0.65f).toInt().coerceAtLeast(3)
 
-        for (i in validCenters.indices) {
-            for (j in (i + 1) until validCenters.size) {
-                val p1 = validCenters[i]
-                val p2 = validCenters[j]
-                val dx = p2.x - p1.x
-                val dy = p2.y - p1.y
+        for (c in clusters) {
+            val cx = c.x.toInt().coerceIn(0, width - 1)
+            val cy = c.y.toInt().coerceIn(0, height - 1)
+
+            var whiteHits = 0
+            var totalSamples = 0
+            for (dy in -radInt..radInt step 2) {
+                for (dx in -radInt..radInt step 2) {
+                    if (dx * dx + dy * dy <= radInt * radInt) {
+                        totalSamples++
+                        val px = (cx + dx).coerceIn(0, width - 1)
+                        val py = (cy + dy).coerceIn(0, height - 1)
+                        val color = pixels[py * width + px]
+                        val r = (color shr 16) and 0xFF
+                        val g = (color shr 8) and 0xFF
+                        val b = color and 0xFF
+                        if (r > 195 && g > 195 && b > 195) {
+                            whiteHits++
+                        }
+                    }
+                }
+            }
+
+            if (totalSamples > 0 && (whiteHits.toFloat() / totalSamples.toFloat()) >= 0.45f) {
+                cueCandidates.add(c)
+            }
+        }
+
+        if (cueCandidates.isEmpty()) {
+            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
+        }
+
+        // Step 3: Find Collinear Line ANCHORED STRICTLY TO A CUE BALL CANDIDATE
+        var bestCue: Vector2D? = null
+        var bestTarget: Vector2D? = null
+        var bestShotDir = Vector2D.ZERO
+        var maxInliers = 0
+
+        for (cue in cueCandidates) {
+            for (p in clusters) {
+                val dx = p.x - cue.x
+                val dy = p.y - cue.y
                 val dist = sqrt(dx * dx + dy * dy)
-                if (dist < 30f || dist > width * 0.75f) continue
+                if (dist < ballRadius * 1.5f || dist > width * 0.75f) continue
 
                 val ux = dx / dist
                 val uy = dy / dist
 
-                val collinear = ArrayList<Vector2D>()
-                collinear.add(p1)
-                collinear.add(p2)
+                val inliers = ArrayList<Vector2D>()
+                inliers.add(cue)
+                inliers.add(p)
 
-                for (k in validCenters.indices) {
-                    if (k != i && k != j) {
-                        val pk = validCenters[k]
-                        val perpDist = abs((pk.x - p1.x) * uy - (pk.y - p1.y) * ux)
-                        if (perpDist < 5.5f) {
-                            collinear.add(pk)
+                for (other in clusters) {
+                    if (other !== cue && other !== p) {
+                        val perpDist = abs((other.x - cue.x) * uy - (other.y - cue.y) * ux)
+                        if (perpDist < 6.0f) {
+                            // Ensure it is in the forward direction of the ray
+                            val proj = (other.x - cue.x) * ux + (other.y - cue.y) * uy
+                            if (proj > 0f) {
+                                inliers.add(other)
+                            }
                         }
                     }
                 }
 
-                if (collinear.size > maxCollinearCount) {
-                    maxCollinearCount = collinear.size
-                    bestCollinear = collinear
+                if (inliers.size > maxInliers) {
+                    maxInliers = inliers.size
+                    bestCue = cue
+                    val sorted = inliers.sortedBy { (it.x - cue.x) * ux + (it.y - cue.y) * uy }
+                    bestTarget = sorted.last()
+                    bestShotDir = Vector2D(ux, uy)
                 }
             }
         }
 
-        if (bestCollinear == null || maxCollinearCount < 3) {
+        if (bestCue == null || bestTarget == null || maxInliers < 3) {
             return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
         }
 
-        // Step 3: Sort along axis
-        val p0 = bestCollinear[0]
-        val pLast = bestCollinear[bestCollinear.size - 1]
-        val lineVec = pLast - p0
-        val axis = lineVec.normalized()
-
-        val sorted = bestCollinear.sortedBy { (it.x - p0.x) * axis.x + (it.y - p0.y) * axis.y }
-        val end1 = sorted.first()
-        val end2 = sorted.last()
-
-        // Check for cue stick texture behind end1 vs end2
-        var stick1 = 0
-        var stick2 = 0
-        val sampleDists = intArrayOf(15, 30, 50, 75)
-
-        for (sd in sampleDists) {
-            val p1x = (end1.x - axis.x * sd).toInt().coerceIn(0, width - 1)
-            val p1y = (end1.y - axis.y * sd).toInt().coerceIn(0, height - 1)
-            val col1 = pixels[p1y * width + p1x]
-            val r1 = (col1 shr 16) and 0xFF
-            val b1 = col1 and 0xFF
-            if (r1 > 110 && r1 > b1 * 1.2f) stick1++
-
-            val p2x = (end2.x + axis.x * sd).toInt().coerceIn(0, width - 1)
-            val p2y = (end2.y + axis.y * sd).toInt().coerceIn(0, height - 1)
-            val col2 = pixels[p2y * width + p2x]
-            val r2 = (col2 shr 16) and 0xFF
-            val b2 = col2 and 0xFF
-            if (r2 > 110 && r2 > b2 * 1.2f) stick2++
-        }
-
-        val (cuePos, targetPos, shotDir) = if (stick1 >= stick2) {
-            Triple(end1, end2, axis)
-        } else {
-            Triple(end2, end1, -axis)
-        }
-
-        val cueBall = BallData(center = cuePos, radius = ballRadius, type = BallType.CUE)
-        val targetBalls = listOf(BallData(center = targetPos, radius = ballRadius, type = BallType.OBJECT_SOLID))
+        val cueBall = BallData(center = bestCue, radius = ballRadius, type = BallType.CUE)
+        val targetBalls = listOf(BallData(center = bestTarget, radius = ballRadius, type = BallType.OBJECT_SOLID))
 
         return DetectionResult(
             tableBounds = table,
             cueBall = cueBall,
-            targetRingPos = targetPos,
+            targetRingPos = bestTarget,
             targetBalls = targetBalls,
             rawContours = emptyList(),
-            aimDirection = shotDir,
+            aimDirection = bestShotDir,
             hasValidAim = true,
             frameWidth = width,
             frameHeight = height

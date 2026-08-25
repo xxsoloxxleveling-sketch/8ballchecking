@@ -12,6 +12,7 @@ data class Vector2D(val x: Float = 0f, val y: Float = 0f) {
 
     operator fun plus(other: Vector2D): Vector2D = Vector2D(x + other.x, y + other.y)
     operator fun minus(other: Vector2D): Vector2D = Vector2D(x - other.x, y - other.y)
+    operator fun unaryMinus(): Vector2D = Vector2D(-x, -y)
     operator fun times(scalar: Float): Vector2D = Vector2D(x * scalar, y * scalar)
     operator fun div(scalar: Float): Vector2D = if (scalar != 0f) Vector2D(x / scalar, y / scalar) else ZERO
 

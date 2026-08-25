@@ -2,9 +2,10 @@ package com.pool.guideline.overlay.physics
 
 import com.pool.guideline.overlay.cv.BallData
 import com.pool.guideline.overlay.cv.TableBounds
+import kotlin.math.abs
 
 /**
- * 8-Ball pool trajectory physics engine.
+ * 8-Ball clone trajectory physics engine.
  * Computes direct ghost ball targeting, multi-cushion bank reflections, and 90-degree tangent deflection.
  */
 class TrajectoryPhysicsEngine(
@@ -29,34 +30,43 @@ class TrajectoryPhysicsEngine(
         val dir = aimDirection.normalized()
         if (dir.lengthSq() < 1e-4f) return TrajectoryResult.EMPTY
 
-        // If target ring is directly identified, snap ghost ball directly to target ring
         val ghostPos = targetRingPos ?: (cueBallPos + dir * 250f)
         val hasGhostBall = targetRingPos != null
 
         val cuePreImpactSegments = ArrayList<TrajectorySegment>()
         cuePreImpactSegments.add(TrajectorySegment(cueBallPos, ghostPos, isCushionBounce = false))
 
-        // Step 1: Locate the target object ball
-        var hitTargetBallPos = ghostPos + (dir * (ballRadius * 1.6f))
+        // Step 1: Resolve Object Ball Impact Direction
+        var targetNormal = dir
+        var hitTargetBallPos = ghostPos + (dir * (ballRadius * 1.5f))
+
         if (hasGhostBall && targetBalls.isNotEmpty()) {
-            var nearestDistSq = Float.MAX_VALUE
             for (b in targetBalls) {
                 val dSq = ghostPos.distanceSqTo(b.center)
-                if (dSq < (ballRadius * 3.0f) * (ballRadius * 3.0f) && dSq < nearestDistSq) {
-                    nearestDistSq = dSq
+                if (dSq > 4.0f && dSq < (ballRadius * 3.0f) * (ballRadius * 3.0f)) {
                     hitTargetBallPos = b.center
+                    val diff = (b.center - ghostPos).normalized()
+                    if (diff.lengthSq() > 0.1f && diff.dot(dir) > 0f) {
+                        targetNormal = diff
+                    }
+                    break
                 }
             }
         }
 
-        // Normal: Target ball direction
-        val targetNormal = (hitTargetBallPos - ghostPos).normalized()
+        // Step 2: Compute 90-degree Tangent Deflection
+        val cross = dir.x * targetNormal.y - dir.y * targetNormal.x
+        val tangent = if (abs(cross) > 0.05f) {
+            if (cross > 0) {
+                Vector2D(-targetNormal.y, targetNormal.x)
+            } else {
+                Vector2D(targetNormal.y, -targetNormal.x)
+            }
+        } else {
+            Vector2D.ZERO
+        }
 
-        // Tangent: 90-degree cue deflection
-        val dot = dir.dot(targetNormal)
-        val cueDeflection = (dir - (targetNormal * dot)).normalized()
-
-        // Step 2: Trace Object Ball Multi-Cushion Bank Path (Zigzag into pockets)
+        // Step 3: Trace Object Ball Multi-Cushion Bank Path
         val targetBallSegments = ArrayList<TrajectorySegment>()
         var bestPocket: Pocket? = null
         var bestPocketScore = 0f
@@ -69,7 +79,6 @@ class TrajectoryPhysicsEngine(
             for (bounce in 0..maxBounces) {
                 val railHit = findRailIntersection(objOrigin, objDir, tableBounds, ballRadius)
 
-                // Check pocket alignment
                 for (p in pockets) {
                     val score = p.computeAlignmentScore(objOrigin, objDir)
                     if (score > bestPocketScore) {
@@ -90,11 +99,11 @@ class TrajectoryPhysicsEngine(
             }
         }
 
-        // Step 3: Trace Cue Ball Post-Impact Multi-Cushion Deflection
+        // Step 4: Trace Cue Ball Tangent Deflection (only on cut shots)
         val cuePostImpactSegments = ArrayList<TrajectorySegment>()
-        if (hasGhostBall && cueDeflection.lengthSq() > 0.1f) {
+        if (hasGhostBall && tangent.lengthSq() > 0.1f) {
             var cueDefOrigin = ghostPos
-            var cueDefDir = cueDeflection
+            var cueDefDir = tangent
 
             for (bounce in 0..2) {
                 val railHit = findRailIntersection(cueDefOrigin, cueDefDir, tableBounds, ballRadius)
@@ -118,8 +127,8 @@ class TrajectoryPhysicsEngine(
             targetBallSegments = targetBallSegments,
             cuePostImpactSegments = cuePostImpactSegments,
             multiBallPaths = emptyList(),
-            targetAngleRad = if (hasGhostBall) targetNormal.angle() else 0f,
-            deflectionAngleRad = if (hasGhostBall) cueDeflection.angle() else 0f,
+            targetAngleRad = targetNormal.angle(),
+            deflectionAngleRad = tangent.angle(),
             bestPocket = bestPocket,
             pocketScore = bestPocketScore,
             ballRadius = ballRadius

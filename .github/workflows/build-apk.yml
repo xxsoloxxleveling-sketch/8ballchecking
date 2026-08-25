@@ -7,6 +7,9 @@ on:
     branches: [ "**" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build & Package APK
@@ -25,24 +28,42 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install Android Build-Tools, Platforms, NDK & CMake
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
 
-      - name: Generate Gradle Wrapper
-        run: |
-          gradle wrapper --gradle-version 8.7 --distribution-type bin
-          chmod +x gradlew
-
       - name: Build Debug APK
         run: |
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Rename APK for Easy Download
+        run: |
+          mkdir -p build-output
+          cp app/build/outputs/apk/debug/*.apk build-output/PoolGuidelineOverlay-debug.apk
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pool-guide-overlay-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: PoolGuidelineOverlay-debug-apk
+          path: build-output/PoolGuidelineOverlay-debug.apk
           retention-days: 30
           if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Pool Guide Overlay v1.0.${{ github.run_number }}"
+          body: "Automatic build of 8-Ball Pool AI Guideline Overlay application with real-time multi-cushion bank raycaster and C++ OpenCV physics engine."
+          files: build-output/PoolGuidelineOverlay-debug.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

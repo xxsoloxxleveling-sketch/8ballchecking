@@ -24,6 +24,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.CalibrationActivity"
+            android:exported="false"
+            android:theme="@style/Theme.PoolGuideOverlay" />
+
         <service
             android:name=".service.OverlayService"
             android:exported="false"

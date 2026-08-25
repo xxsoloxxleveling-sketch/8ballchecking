@@ -1,6 +1,5 @@
 package com.pool.guideline.overlay.ui
 
-import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.os.Bundle
@@ -8,6 +7,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
 import com.pool.guideline.overlay.cv.TableBounds
 import com.pool.guideline.overlay.cv.TableBoundsCalibration
 
@@ -16,7 +16,7 @@ import com.pool.guideline.overlay.cv.TableBoundsCalibration
  * Allows calibrating and persisting 4-corner table bounds, clearing calibration,
  * and toggling CV debug visualization.
  */
-class CalibrationActivity : Activity() {
+class CalibrationActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

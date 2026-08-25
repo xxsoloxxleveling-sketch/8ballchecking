@@ -123,8 +123,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnCalibrateTable.setOnClickListener {
-            val intent = Intent(this, com.pool.guideline.overlay.ui.CalibrationActivity::class.java)
-            startActivity(intent)
+            if (OverlayService.isRunning) {
+                val serviceIntent = Intent(this, OverlayService::class.java).apply {
+                    action = OverlayService.ACTION_CALIBRATE
+                }
+                startService(serviceIntent)
+                Toast.makeText(this, "🎯 Drag the 4 corner handles over your table cushions!", Toast.LENGTH_LONG).show()
+            } else {
+                val intent = Intent(this, com.pool.guideline.overlay.ui.CalibrationActivity::class.java)
+                startActivity(intent)
+            }
         }
 
         binding.spinnerFeltPreset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {

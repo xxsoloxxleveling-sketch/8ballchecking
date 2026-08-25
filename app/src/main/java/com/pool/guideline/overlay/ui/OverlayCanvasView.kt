@@ -195,7 +195,26 @@ class OverlayCanvasView @JvmOverloads constructor(
         val traj = currentTrajectory
         val radius = traj.ballRadius * coordScaleX
 
-        // 1. Draw Cue Pre-Impact Ray
+        // 1. Always Draw Calibrated Table Bounds Outline (Yellow) if Debug is Enabled
+        if ((showDebugBounds || debugCvMode) && currentTableBounds.isValid) {
+            val left = currentTableBounds.xMin * coordScaleX
+            val top = currentTableBounds.yMin * coordScaleY
+            val right = currentTableBounds.xMax * coordScaleX
+            val bottom = currentTableBounds.yMax * coordScaleY
+            scratchRectF.set(left, top, right, bottom)
+            canvas.drawRect(scratchRectF, debugTablePaint)
+
+            val pr = dpToPx(6f)
+            val midX = (left + right) / 2f
+            canvas.drawCircle(left, top, pr, pocketHighlightPaint)
+            canvas.drawCircle(midX, top, pr, pocketHighlightPaint)
+            canvas.drawCircle(right, top, pr, pocketHighlightPaint)
+            canvas.drawCircle(left, bottom, pr, pocketHighlightPaint)
+            canvas.drawCircle(midX, bottom, pr, pocketHighlightPaint)
+            canvas.drawCircle(right, bottom, pr, pocketHighlightPaint)
+        }
+
+        // 2. Draw Cue Pre-Impact Ray
         for (seg in traj.cuePathSegments) {
             val sx = seg.start.x * coordScaleX
             val sy = seg.start.y * coordScaleY
@@ -204,14 +223,14 @@ class OverlayCanvasView @JvmOverloads constructor(
             canvas.drawLine(sx, sy, ex, ey, cueRayPaint)
         }
 
-        // 2. Draw Ghost Ball Ring
+        // 3. Draw Ghost Ball Ring & Target Trajectory
         if (traj.hasGhostBall) {
             val gx = traj.ghostBallCenter.x * coordScaleX
             val gy = traj.ghostBallCenter.y * coordScaleY
             canvas.drawCircle(gx, gy, radius, ghostBallFillPaint)
             canvas.drawCircle(gx, gy, radius, ghostBallPaint)
 
-            // 3. Draw Object Ball Multi-Cushion Bank Path
+            // Object Ball Multi-Cushion Bank Path
             for (seg in traj.targetBallSegments) {
                 val sx = seg.start.x * coordScaleX
                 val sy = seg.start.y * coordScaleY
@@ -221,7 +240,7 @@ class OverlayCanvasView @JvmOverloads constructor(
                 canvas.drawLine(sx, sy, ex, ey, paint)
             }
 
-            // 4. Draw Tangent Cue Ball Deflection
+            // Tangent Cue Ball Deflection
             for (seg in traj.cuePostImpactSegments) {
                 val sx = seg.start.x * coordScaleX
                 val sy = seg.start.y * coordScaleY
@@ -230,7 +249,7 @@ class OverlayCanvasView @JvmOverloads constructor(
                 canvas.drawLine(sx, sy, ex, ey, deflectionPaint)
             }
 
-            // 5. Pocket Highlight
+            // Pocket Highlight
             traj.bestPocket?.let { pocket ->
                 if (traj.pocketScore > 0.20f) {
                     val px = pocket.position.x * coordScaleX
@@ -239,44 +258,33 @@ class OverlayCanvasView @JvmOverloads constructor(
                     canvas.drawCircle(px, py, pRad, pocketHighlightPaint)
                 }
             }
+        }
 
-            // 6. Debug Candidate Vectors: Green (Forward/Chosen), Red (Backward/Rejected)
-            if (debugCvMode && debugChosenForward.lengthSq() > 0.1f) {
-                val cx = traj.ghostBallCenter.x * coordScaleX
-                val cy = traj.ghostBallCenter.y * coordScaleY
+        // 4. Debug Candidate Direction Vectors: Green (Forward/Chosen), Red (Backward/Rejected)
+        if ((debugCvMode || showDebugBounds) && debugChosenForward.lengthSq() > 0.1f && traj.cuePathSegments.isNotEmpty()) {
+            val origin = traj.cuePathSegments[0].start
+            val cx = origin.x * coordScaleX
+            val cy = origin.y * coordScaleY
 
-                val fwdEndX = cx + debugChosenForward.x * dpToPx(50f)
-                val fwdEndY = cy + debugChosenForward.y * dpToPx(50f)
-                canvas.drawLine(cx, cy, fwdEndX, fwdEndY, debugForwardPaint)
+            val fwdEndX = cx + debugChosenForward.x * dpToPx(60f)
+            val fwdEndY = cy + debugChosenForward.y * dpToPx(60f)
+            canvas.drawLine(cx, cy, fwdEndX, fwdEndY, debugForwardPaint)
 
-                if (debugRejectedBackward.lengthSq() > 0.1f) {
-                    val bwdEndX = cx + debugRejectedBackward.x * dpToPx(50f)
-                    val bwdEndY = cy + debugRejectedBackward.y * dpToPx(50f)
-                    canvas.drawLine(cx, cy, bwdEndX, bwdEndY, debugBackwardPaint)
-                }
+            if (debugRejectedBackward.lengthSq() > 0.1f) {
+                val bwdEndX = cx + debugRejectedBackward.x * dpToPx(60f)
+                val bwdEndY = cy + debugRejectedBackward.y * dpToPx(60f)
+                canvas.drawLine(cx, cy, bwdEndX, bwdEndY, debugBackwardPaint)
             }
         }
 
-        // CV Debug Visualization Mode
+        // 5. CV Debug Contours
         if (debugCvMode) {
-            if (currentTableBounds.isValid) {
-                scratchRectF.set(
-                    currentTableBounds.xMin * coordScaleX,
-                    currentTableBounds.yMin * coordScaleY,
-                    currentTableBounds.xMax * coordScaleX,
-                    currentTableBounds.yMax * coordScaleY
-                )
-                canvas.drawRect(scratchRectF, debugTablePaint)
-            }
-
-            // Raw Contours (Red)
             for (c in debugRawContours) {
                 if (!c.isAccepted) {
                     canvas.drawCircle(c.center.x * coordScaleX, c.center.y * coordScaleY, c.radius * coordScaleX, rawContourPaint)
                 }
             }
 
-            // Accepted Balls (Green + Circularity Score)
             for (b in debugAcceptedBalls) {
                 val bx = b.center.x * coordScaleX
                 val by = b.center.y * coordScaleY

@@ -23,17 +23,19 @@ import com.pool.guideline.overlay.R
 import com.pool.guideline.overlay.cv.TableBoundsCalibration
 import com.pool.guideline.overlay.cv.TableFeltPreset
 import com.pool.guideline.overlay.ui.CalibrationActivity
+import com.pool.guideline.overlay.ui.InteractiveCalibrationView
 import com.pool.guideline.overlay.ui.OverlayCanvasView
 
 /**
- * Foreground Service running the floating transparent overlay and hosting the MediaProjection pipeline.
- * Adheres to Android 14+ (API 34/35) foregroundServiceType="mediaProjection" requirements.
+ * Foreground Service running the floating transparent overlay, hosting the MediaProjection pipeline,
+ * and managing live in-game 4-corner interactive calibration.
  */
 class OverlayService : Service() {
 
     private val tag = "OverlayService"
     private var windowManager: WindowManager? = null
     private var overlayView: OverlayCanvasView? = null
+    private var calibrationView: InteractiveCalibrationView? = null
     private var captureManager: ScreenCaptureManager? = null
 
     companion object {
@@ -43,6 +45,7 @@ class OverlayService : Service() {
         const val ACTION_START = "com.pool.guideline.overlay.START"
         const val ACTION_STOP = "com.pool.guideline.overlay.STOP"
         const val ACTION_UPDATE_CONFIG = "com.pool.guideline.overlay.UPDATE_CONFIG"
+        const val ACTION_CALIBRATE = "com.pool.guideline.overlay.CALIBRATE"
 
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
@@ -88,6 +91,9 @@ class OverlayService : Service() {
                 } else {
                     Log.e(tag, "Invalid MediaProjection token received in onStartCommand")
                 }
+            }
+            ACTION_CALIBRATE -> {
+                showInteractiveCalibrator()
             }
             ACTION_UPDATE_CONFIG -> {
                 val presetName = intent.getStringExtra(EXTRA_FELT_PRESET)
@@ -151,6 +157,54 @@ class OverlayService : Service() {
         windowManager?.addView(overlayView, layoutParams)
     }
 
+    fun showInteractiveCalibrator() {
+        if (calibrationView != null) return
+
+        val wm = windowManager ?: return
+        val calView = InteractiveCalibrationView(this).apply {
+            onCalibrationSavedListener = {
+                hideInteractiveCalibrator()
+            }
+            onCalibrationCancelledListener = {
+                hideInteractiveCalibrator()
+            }
+        }
+
+        val calParams = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+
+            format = PixelFormat.TRANSLUCENT
+            width = WindowManager.LayoutParams.MATCH_PARENT
+            height = WindowManager.LayoutParams.MATCH_PARENT
+        }
+
+        try {
+            wm.addView(calView, calParams)
+            calibrationView = calView
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to show calibration overlay: ${e.message}")
+        }
+    }
+
+    fun hideInteractiveCalibrator() {
+        val cv = calibrationView ?: return
+        val wm = windowManager ?: return
+        try {
+            wm.removeView(cv)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to remove calibration view: ${e.message}")
+        }
+        calibrationView = null
+    }
+
     private fun startScreenCapture(resultCode: Int, resultData: Intent) {
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val mediaProjection: MediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -203,10 +257,11 @@ class OverlayService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val calibrateIntent = Intent(this, CalibrationActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        // Action to trigger in-game 4-corner interactive calibration
+        val calibrateIntent = Intent(this, OverlayService::class.java).apply {
+            action = ACTION_CALIBRATE
         }
-        val pendingCalibrate = PendingIntent.getActivity(
+        val pendingCalibrate = PendingIntent.getService(
             this,
             2,
             calibrateIntent,
@@ -228,7 +283,7 @@ class OverlayService : Service() {
             .setContentText("Real-time AI trajectory overlay is running")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingMain)
-            .addAction(android.R.drawable.ic_menu_edit, "Calibrate Table", pendingCalibrate)
+            .addAction(android.R.drawable.ic_menu_edit, "🎯 Calibrate In-Game", pendingCalibrate)
             .addAction(android.R.drawable.ic_delete, "Stop Overlay", pendingStop)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -240,6 +295,8 @@ class OverlayService : Service() {
         Log.i(tag, "OverlayService onDestroy - Cleaning up resources")
         isRunning = false
         instance = null
+
+        hideInteractiveCalibrator()
 
         captureManager?.stopCapture()
         captureManager = null

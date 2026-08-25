@@ -5,21 +5,22 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import com.pool.guideline.overlay.cv.BallData
+import com.pool.guideline.overlay.cv.RawContourData
 import com.pool.guideline.overlay.cv.TableBounds
 import com.pool.guideline.overlay.physics.TrajectoryResult
 
 /**
  * High-performance hardware-accelerated transparent overlay view.
  * Renders:
- * 1. Primary cue aiming line + bank reflections
+ * 1. Primary cue aiming line
  * 2. Ghost ball contact ring
- * 3. Object ball multi-cushion bank trajectories (zigzagging into pockets)
- * 4. Post-impact cue ball deflection paths
- * 5. Multi-ball break shot projection paths with individual ball colors
+ * 3. Object ball multi-cushion bank trajectory into pockets
+ * 4. Post-impact cue ball deflection tangent line
+ * 5. CV Debug mode: contours, table bounds, and circularity metrics
  */
 class OverlayCanvasView @JvmOverloads constructor(
     context: Context,
@@ -31,10 +32,14 @@ class OverlayCanvasView @JvmOverloads constructor(
     private var currentTrajectory: TrajectoryResult = TrajectoryResult.EMPTY
     private var currentTableBounds: TableBounds = TableBounds.EMPTY
 
+    private var debugRawContours: List<RawContourData> = emptyList()
+    private var debugAcceptedBalls: List<BallData> = emptyList()
+
     // Coordinate scaling
     var coordScaleX: Float = 1.0f
     var coordScaleY: Float = 1.0f
     var showDebugBounds: Boolean = false
+    var debugCvMode: Boolean = false
     var showFps: Boolean = true
 
     // FPS Counter
@@ -49,16 +54,8 @@ class OverlayCanvasView @JvmOverloads constructor(
     private val cueRayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dpToPx(3.8f)
-        color = Color.argb(240, 255, 255, 255)
+        color = Color.WHITE
         strokeCap = Paint.Cap.ROUND
-    }
-
-    private val cushionRayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dpToPx(3.0f)
-        color = Color.argb(190, 120, 230, 255)
-        strokeCap = Paint.Cap.ROUND
-        pathEffect = DashPathEffect(floatArrayOf(15f, 10f), 0f)
     }
 
     private val ghostBallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -96,27 +93,33 @@ class OverlayCanvasView @JvmOverloads constructor(
         pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
     }
 
-    private val multiBallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dpToPx(2.8f)
-        strokeCap = Paint.Cap.ROUND
-    }
-
     private val pocketHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dpToPx(3.5f)
         color = Color.argb(240, 57, 255, 20)
     }
 
-    private val debugPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val debugTablePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dpToPx(2.0f)
+        color = Color.CYAN
+    }
+
+    private val rawContourPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dpToPx(1.5f)
-        color = Color.argb(180, 255, 60, 60)
+        color = Color.RED
+    }
+
+    private val acceptedBallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dpToPx(2.5f)
+        color = Color.GREEN
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = dpToPx(13.0f)
+        textSize = dpToPx(12.0f)
         setShadowLayer(4f, 2f, 2f, Color.BLACK)
     }
 
@@ -126,9 +129,16 @@ class OverlayCanvasView @JvmOverloads constructor(
         setLayerType(LAYER_TYPE_HARDWARE, null)
     }
 
-    fun updateTrajectory(result: TrajectoryResult, bounds: TableBounds) {
+    fun updateTrajectory(
+        result: TrajectoryResult,
+        bounds: TableBounds,
+        rawContours: List<RawContourData> = emptyList(),
+        acceptedBalls: List<BallData> = emptyList()
+    ) {
         currentTrajectory = smoothingFilter.smooth(result)
         currentTableBounds = bounds
+        debugRawContours = rawContours
+        debugAcceptedBalls = acceptedBalls
         postInvalidate()
     }
 
@@ -144,14 +154,13 @@ class OverlayCanvasView @JvmOverloads constructor(
         val traj = currentTrajectory
         val radius = traj.ballRadius * coordScaleX
 
-        // 1. Draw Cue Pre-Impact Ray Segments
+        // 1. Draw Cue Pre-Impact Ray
         for (seg in traj.cuePathSegments) {
             val sx = seg.start.x * coordScaleX
             val sy = seg.start.y * coordScaleY
             val ex = seg.end.x * coordScaleX
             val ey = seg.end.y * coordScaleY
-            val paint = if (seg.isCushionBounce) cushionRayPaint else cueRayPaint
-            canvas.drawLine(sx, sy, ex, ey, paint)
+            canvas.drawLine(sx, sy, ex, ey, cueRayPaint)
         }
 
         // 2. Draw Ghost Ball Ring
@@ -161,7 +170,7 @@ class OverlayCanvasView @JvmOverloads constructor(
             canvas.drawCircle(gx, gy, radius, ghostBallFillPaint)
             canvas.drawCircle(gx, gy, radius, ghostBallPaint)
 
-            // 3. Draw Object Ball Multi-Cushion Bank Paths (Zigzag to Pocket - Image 1)
+            // 3. Draw Object Ball Multi-Cushion Bank Path
             for (seg in traj.targetBallSegments) {
                 val sx = seg.start.x * coordScaleX
                 val sy = seg.start.y * coordScaleY
@@ -171,7 +180,7 @@ class OverlayCanvasView @JvmOverloads constructor(
                 canvas.drawLine(sx, sy, ex, ey, paint)
             }
 
-            // 4. Draw Post-Impact Cue Ball Deflection Bank Paths (Image 2)
+            // 4. Draw Tangent Cue Ball Deflection
             for (seg in traj.cuePostImpactSegments) {
                 val sx = seg.start.x * coordScaleX
                 val sy = seg.start.y * coordScaleY
@@ -180,38 +189,44 @@ class OverlayCanvasView @JvmOverloads constructor(
                 canvas.drawLine(sx, sy, ex, ey, deflectionPaint)
             }
 
-            // 5. Draw Multi-Ball Break Shot Simulation (Image 3)
-            for (ballPath in traj.multiBallPaths) {
-                multiBallPaint.color = ballPath.ballColor
-                for (seg in ballPath.segments) {
-                    val sx = seg.start.x * coordScaleX
-                    val sy = seg.start.y * coordScaleY
-                    val ex = seg.end.x * coordScaleX
-                    val ey = seg.end.y * coordScaleY
-                    canvas.drawLine(sx, sy, ex, ey, multiBallPaint)
-                }
-            }
-
-            // 6. Pocket Highlight
+            // 5. Pocket Highlight
             traj.bestPocket?.let { pocket ->
-                if (traj.pocketScore > 0.25f) {
+                if (traj.pocketScore > 0.20f) {
                     val px = pocket.position.x * coordScaleX
                     val py = pocket.position.y * coordScaleY
-                    val pRad = pocket.captureRadius * coordScaleX * (0.85f + 0.2f * traj.pocketScore)
+                    val pRad = pocket.captureRadius * coordScaleX
                     canvas.drawCircle(px, py, pRad, pocketHighlightPaint)
                 }
             }
         }
 
-        // Debug ROI Bounds
-        if (showDebugBounds && currentTableBounds.isValid) {
-            scratchRectF.set(
-                currentTableBounds.xMin * coordScaleX,
-                currentTableBounds.yMin * coordScaleY,
-                currentTableBounds.xMax * coordScaleX,
-                currentTableBounds.yMax * coordScaleY
-            )
-            canvas.drawRect(scratchRectF, debugPaint)
+        // CV Debug Visualization Mode
+        if (debugCvMode) {
+            if (currentTableBounds.isValid) {
+                scratchRectF.set(
+                    currentTableBounds.xMin * coordScaleX,
+                    currentTableBounds.yMin * coordScaleY,
+                    currentTableBounds.xMax * coordScaleX,
+                    currentTableBounds.yMax * coordScaleY
+                )
+                canvas.drawRect(scratchRectF, debugTablePaint)
+            }
+
+            // Raw Contours (Red)
+            for (c in debugRawContours) {
+                if (!c.isAccepted) {
+                    canvas.drawCircle(c.center.x * coordScaleX, c.center.y * coordScaleY, c.radius * coordScaleX, rawContourPaint)
+                }
+            }
+
+            // Accepted Balls (Green + Circularity Score)
+            for (b in debugAcceptedBalls) {
+                val bx = b.center.x * coordScaleX
+                val by = b.center.y * coordScaleY
+                val br = b.radius * coordScaleX
+                canvas.drawCircle(bx, by, br, acceptedBallPaint)
+                canvas.drawText("C:${String.format("%.2f", b.circularity)}", bx - br, by - br - 4f, textPaint)
+            }
         }
 
         if (showFps) {

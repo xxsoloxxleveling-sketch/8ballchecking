@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
+import com.pool.guideline.overlay.cv.BallData
 import com.pool.guideline.overlay.cv.TableAndBallDetector
 import com.pool.guideline.overlay.cv.TableFeltPreset
 import com.pool.guideline.overlay.physics.TrajectoryPhysicsEngine
@@ -129,6 +130,10 @@ class ScreenCaptureManager(
             pixelStride = pixelStride
         )
 
+        val allAcceptedBalls = ArrayList<BallData>()
+        detection.cueBall?.let { allAcceptedBalls.add(it) }
+        allAcceptedBalls.addAll(detection.targetBalls)
+
         // Only draw trajectory WHEN the player is actively aiming!
         if (detection.tableBounds.isValid && detection.cueBall != null && detection.hasValidAim) {
             val trajectory = physicsEngine.computeTrajectory(
@@ -139,10 +144,10 @@ class ScreenCaptureManager(
                 tableBounds = detection.tableBounds,
                 ballRadius = detection.tableBounds.estimatedBallRadius
             )
-            overlayView.updateTrajectory(trajectory, detection.tableBounds)
+            overlayView.updateTrajectory(trajectory, detection.tableBounds, detection.rawContours, allAcceptedBalls)
         } else {
             // Clean canvas when not aiming or during ball in hand
-            overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds)
+            overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds, detection.rawContours, allAcceptedBalls)
         }
     }
 

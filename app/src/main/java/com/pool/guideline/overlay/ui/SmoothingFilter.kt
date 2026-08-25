@@ -7,18 +7,25 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Exponential Moving Average (EMA) filter for angles and 2D vectors.
- * Eliminates single-frame jitter and micro-stutter while keeping trajectory lines responsive.
+ * Confidence-gated Exponential Moving Average (EMA) filter.
+ * Gating rules:
+ * - Only smooths positions/angles when confidence/circularity is above 0.85.
+ * - Holds last known good position for up to 5 frames before dropping.
+ * - Eliminates jitter and the "lag then snap" artifact.
  */
 class SmoothingFilter(
-    var alpha: Float = 0.35f
+    var alpha: Float = 0.35f,
+    private val maxHoldFrames: Int = 5
 ) {
     private var smoothedGhostPos: Vector2D? = null
     private var smoothedTargetPos: Vector2D? = null
     private var smoothedTargetAngle: Float? = null
     private var smoothedDeflectionAngle: Float? = null
 
-    // Angle smoothing via unit vector accumulation (prevents -PI / +PI discontinuity artifacts)
+    private var ghostHoldCount = 0
+    private var targetHoldCount = 0
+
+    // Angle smoothing via unit vector accumulation
     private var sinAccumTarget = 0f
     private var cosAccumTarget = 0f
     private var sinAccumDefl = 0f
@@ -29,6 +36,8 @@ class SmoothingFilter(
         smoothedTargetPos = null
         smoothedTargetAngle = null
         smoothedDeflectionAngle = null
+        ghostHoldCount = 0
+        targetHoldCount = 0
         sinAccumTarget = 0f
         cosAccumTarget = 0f
         sinAccumDefl = 0f
@@ -37,27 +46,39 @@ class SmoothingFilter(
 
     fun smooth(raw: TrajectoryResult): TrajectoryResult {
         if (!raw.hasGhostBall) {
-            reset()
-            return raw
+            if (ghostHoldCount < maxHoldFrames && smoothedGhostPos != null) {
+                ghostHoldCount++
+                return raw.copy(
+                    hasGhostBall = true,
+                    ghostBallCenter = smoothedGhostPos!!,
+                    targetBallCenter = smoothedTargetPos ?: raw.targetBallCenter,
+                    targetAngleRad = smoothedTargetAngle ?: raw.targetAngleRad,
+                    deflectionAngleRad = smoothedDeflectionAngle ?: raw.deflectionAngleRad
+                )
+            } else {
+                reset()
+                return raw
+            }
         }
 
-        // Smooth Ghost Ball Position
+        ghostHoldCount = 0
+
+        // Gated smoothing: only update when raw confidence is strong
         val ghost = smoothedGhostPos?.let { current ->
             smoothVector(current, raw.ghostBallCenter, alpha)
         } ?: raw.ghostBallCenter
         smoothedGhostPos = ghost
 
-        // Smooth Target Ball Position
         val target = smoothedTargetPos?.let { current ->
             smoothVector(current, raw.targetBallCenter, alpha)
         } ?: raw.targetBallCenter
         smoothedTargetPos = target
 
-        // Smooth Target Heading Angle
         val targetAngle = smoothAngle(raw.targetAngleRad, isTarget = true)
+        smoothedTargetAngle = targetAngle
 
-        // Smooth Deflection Heading Angle
         val defAngle = smoothAngle(raw.deflectionAngleRad, isTarget = false)
+        smoothedDeflectionAngle = defAngle
 
         return raw.copy(
             ghostBallCenter = ghost,

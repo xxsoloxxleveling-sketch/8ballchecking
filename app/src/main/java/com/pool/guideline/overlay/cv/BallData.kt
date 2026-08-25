@@ -14,5 +14,7 @@ data class BallData(
     val center: Vector2D,
     val radius: Float,
     val type: BallType = BallType.UNKNOWN,
-    val confidence: Float = 1.0f
+    val confidence: Float = 1.0f,
+    val circularity: Float = 1.0f,
+    val brightness: Float = 0.0f
 )

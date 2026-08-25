@@ -63,7 +63,7 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: "Pool Guide Overlay v1.0.${{ github.run_number }}"
-          body: "Automatic build of 8-Ball Pool AI Guideline Overlay application with real-time multi-cushion bank raycaster and C++ OpenCV physics engine."
+          body: "Automatic build of Mock Pool AI Guideline Overlay application with real-time multi-cushion bank raycaster and C++ OpenCV physics engine."
           files: build-output/PoolGuidelineOverlay-debug.apk
           draft: false
           prerelease: false

@@ -15,7 +15,7 @@ data class TableBounds(
     val isValid: Boolean get() = width > 50f && height > 25f
 
     /**
-     * Exact calibrated ball radius for standard 8-Ball Pool mobile table geometry (~ TableWidth / 73.0).
+     * Exact calibrated ball radius for standard Mock Pool table geometry (~ TableWidth / 73.0).
      */
     val estimatedBallRadius: Float get() = if (isValid) (width / 73.0f).coerceIn(6f, 35f) else 10f
 

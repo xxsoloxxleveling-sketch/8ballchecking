@@ -39,7 +39,7 @@ data class DetectionResult(
 )
 
 /**
- * Cue-Anchored Collinear Aiming Engine for 8-ball clone.
+ * Cue-Anchored Collinear Aiming Engine for Mock Pool.
  * Detects the active in-game aiming guideline anchored strictly to the Cue Ball.
  */
 class TableAndBallDetector(

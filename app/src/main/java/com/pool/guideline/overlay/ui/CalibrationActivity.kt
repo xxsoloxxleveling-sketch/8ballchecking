@@ -23,7 +23,7 @@ class CalibrationActivity : Activity() {
         }
 
         val titleText = TextView(this).apply {
-            text = "8-Ball CV Calibration & Settings"
+            text = "Mock Pool CV Calibration & Settings"
             textSize = 20f
         }
         layout.addView(titleText)

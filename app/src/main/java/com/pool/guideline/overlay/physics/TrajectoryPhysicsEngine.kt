@@ -5,7 +5,7 @@ import com.pool.guideline.overlay.cv.TableBounds
 import kotlin.math.abs
 
 /**
- * 8-Ball clone trajectory physics engine.
+ * Mock Pool trajectory physics engine.
  * Computes direct ghost ball targeting, multi-cushion bank reflections, and 90-degree tangent deflection.
  */
 class TrajectoryPhysicsEngine(

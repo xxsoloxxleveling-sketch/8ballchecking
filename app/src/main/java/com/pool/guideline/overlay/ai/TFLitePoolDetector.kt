@@ -22,7 +22,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * On-device TensorFlow Lite & Deep Feature Object Detection Engine for 8-ball clone.
+ * On-device TensorFlow Lite & Deep Feature Object Detection Engine for Mock Pool.
  * Detects:
  * 1. Cue Ball (Class 0)
  * 2. Object Balls (Class 1)

@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">Pool Guide Overlay</string>
+    <string name="title_dashboard">AI Pool Guideline</string>
+    <string name="subtitle_dashboard">Real-time Computer Vision &amp; Physics Raycaster</string>
+    <string name="status_inactive">Overlay Inactive</string>
+    <string name="status_active">Overlay Active (Running at 60 FPS)</string>
+    <string name="btn_start">Start AI Overlay</string>
+    <string name="btn_stop">Stop Overlay</string>
+    <string name="section_config">Detection &amp; Physics Configuration</string>
+    <string name="label_felt_preset">Table Felt Color Preset</string>
+    <string name="label_max_bounces">Max Cushion Bounces</string>
+    <string name="label_smoothing">Angle Smoothing (EMA \u03B1 = 0.35)</string>
+    <string name="label_show_debug">Show Table Felt Debug Box</string>
+    <string name="permission_overlay_title">System Overlay Permission Required</string>
+    <string name="permission_overlay_desc">This app needs permission to draw guided trajectory lines on top of your pool game.</string>
+    <string name="permission_overlay_grant">Grant Overlay Permission</string>
+</resources>

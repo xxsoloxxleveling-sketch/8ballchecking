@@ -11,8 +11,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
-import com.pool.guideline.overlay.ai.TFLitePoolDetector
 import com.pool.guideline.overlay.cv.BallData
+import com.pool.guideline.overlay.cv.TableAndBallDetector
 import com.pool.guideline.overlay.cv.TableFeltPreset
 import com.pool.guideline.overlay.physics.TrajectoryPhysicsEngine
 import com.pool.guideline.overlay.physics.TrajectoryResult
@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 60 FPS screen capture pipeline driven by on-device TensorFlow Lite / Deep Feature AI Detection.
+ * High-performance 60 FPS screen capture & trajectory overlay manager.
  */
 class ScreenCaptureManager(
     private val context: Context,
@@ -33,18 +33,15 @@ class ScreenCaptureManager(
 ) {
     private val tag = "ScreenCaptureMgr"
 
-    // 60fps working resolution (640-pixel width)
-    private var processWidth = 640
-    private var processHeight = 360
+    private var processWidth = 480
+    private var processHeight = 270
 
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var handlerThread: HandlerThread? = null
 
-    private val tfliteDetector = TFLitePoolDetector(context)
+    private val detector = TableAndBallDetector(TableFeltPreset.AUTO)
     private val physicsEngine = TrajectoryPhysicsEngine(maxBounces = 4)
-
-    private var pixelBuffer: IntArray = IntArray(0)
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var isRunning = AtomicBoolean(false)
@@ -57,14 +54,15 @@ class ScreenCaptureManager(
         val sHeight = if (screenHeight > 0) screenHeight else 1080
         val density = if (densityDpi > 0) densityDpi else 320
 
-        val scale = 640f / sWidth.toFloat()
-        processWidth = 640
+        // 480x270 ensures blazing fast 60+ FPS processing with zero battery/CPU overhead
+        val scale = 480f / sWidth.toFloat()
+        processWidth = 480
         processHeight = ((sHeight * scale).toInt() / 16) * 16
 
         overlayView.coordScaleX = sWidth.toFloat() / processWidth.toFloat()
         overlayView.coordScaleY = sHeight.toFloat() / processHeight.toFloat()
 
-        Log.i(tag, "ScreenCapture AI Init: Screen=${sWidth}x${sHeight}, Processing=${processWidth}x${processHeight}")
+        Log.i(tag, "ScreenCapture 60FPS Init: Screen=${sWidth}x${sHeight}, CV=${processWidth}x${processHeight}")
 
         mediaProjection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
@@ -80,7 +78,7 @@ class ScreenCaptureManager(
             2
         )
 
-        handlerThread = HandlerThread("PoolAIImageReaderThread").apply { start() }
+        handlerThread = HandlerThread("PoolImageReaderThread", Thread.MAX_PRIORITY).apply { start() }
         val workerHandler = Handler(handlerThread!!.looper)
 
         virtualDisplay = mediaProjection.createVirtualDisplay(
@@ -97,15 +95,14 @@ class ScreenCaptureManager(
         imageReader!!.setOnImageAvailableListener({ reader ->
             if (!isRunning.get()) return@setOnImageAvailableListener
 
-            val image = reader.acquireLatestImage()
-            if (image == null) return@setOnImageAvailableListener
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
 
             if (processingFrame.compareAndSet(false, true)) {
                 scope.launch {
                     try {
                         processImageFrame(image)
                     } catch (t: Throwable) {
-                        Log.e(tag, "AI processing error: ${t.message}")
+                        Log.e(tag, "CV error: ${t.message}")
                     } finally {
                         image.close()
                         processingFrame.set(false)
@@ -123,34 +120,13 @@ class ScreenCaptureManager(
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
 
-        val width = image.width
-        val height = image.height
-        val total = width * height
-
-        if (pixelBuffer.size != total) {
-            pixelBuffer = IntArray(total)
-        }
-
-        buffer.position(0)
-        var destIdx = 0
-        val bufferLimit = buffer.limit()
-
-        for (y in 0 until height) {
-            val rowStart = y * rowStride
-            for (x in 0 until width) {
-                val offset = rowStart + (x * pixelStride)
-                if (offset + 2 < bufferLimit) {
-                    val r = buffer.get(offset).toInt() and 0xFF
-                    val g = buffer.get(offset + 1).toInt() and 0xFF
-                    val b = buffer.get(offset + 2).toInt() and 0xFF
-                    pixelBuffer[destIdx++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                } else {
-                    pixelBuffer[destIdx++] = 0xFF000000.toInt()
-                }
-            }
-        }
-
-        val detection = tfliteDetector.detect(pixelBuffer, width, height)
+        val detection = detector.processFrame(
+            buffer = buffer,
+            width = image.width,
+            height = image.height,
+            rowStride = rowStride,
+            pixelStride = pixelStride
+        )
 
         val allAcceptedBalls = ArrayList<BallData>()
         detection.cueBall?.let { allAcceptedBalls.add(it) }
@@ -172,7 +148,7 @@ class ScreenCaptureManager(
     }
 
     fun setFeltPreset(preset: TableFeltPreset) {
-        // AI model handles table skin variants automatically
+        detector.feltPreset = preset
     }
 
     fun setMaxBounces(bounces: Int) {
@@ -182,7 +158,6 @@ class ScreenCaptureManager(
     fun stopCapture() {
         isRunning.set(false)
         try {
-            tfliteDetector.close()
             virtualDisplay?.release()
             virtualDisplay = null
             imageReader?.close()

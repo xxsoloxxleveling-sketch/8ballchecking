@@ -3,9 +3,10 @@ package com.pool.guideline.overlay.cv
 import com.pool.guideline.overlay.physics.Vector2D
 import java.nio.ByteBuffer
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
+import kotlin.math.sin
 
 enum class TableFeltPreset {
     AUTO,
@@ -26,8 +27,8 @@ data class DetectionResult(
 )
 
 /**
- * Computer vision engine calibrated for 8-ball pool gameplay.
- * Identifies the collinear in-game aim guideline and cue stick axis for sub-pixel shot vector extraction.
+ * High-precision computer vision engine for 8-ball pool.
+ * Detects the in-game target crosshair ring and reverses along the white guideline to find the cue ball and exact shot vector.
  */
 class TableAndBallDetector(
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
@@ -80,22 +81,32 @@ class TableAndBallDetector(
         val table = cachedTableBounds
         val ballRadius = table.estimatedBallRadius
 
-        // Step 2: Extract all white / high-brightness clusters inside the felt area
-        val clusters = findWhiteClusters(pixels, width, height, table, ballRadius)
+        // Step 2: Find the in-game Target Crosshair Ring (placed directly on the aimed ball)
+        val targetRing = findTargetRing(pixels, width, height, table, ballRadius)
 
-        // Step 3: Find the collinear aim guideline / cue stick line
-        val (cuePos, aimDir, isValid) = solveAimLine(pixels, width, height, clusters, table, ballRadius)
+        var cueBall: BallData? = null
+        var aimDirection = Vector2D.ZERO
+        var hasValidAim = false
+
+        if (targetRing != null) {
+            // Step 3: Trace reverse white guideline ray from Target Ring to find the Cue Ball and shot vector
+            val (cuePos, shotVector, valid) = traceAimLineFromTarget(pixels, width, height, targetRing, table, ballRadius)
+            if (valid) {
+                cueBall = BallData(center = cuePos, radius = ballRadius, type = BallType.CUE)
+                aimDirection = shotVector
+                hasValidAim = true
+            }
+        }
 
         // Step 4: Detect all Object Balls on the table felt
-        val cueBall = if (cuePos != null) BallData(center = cuePos, radius = ballRadius, type = BallType.CUE) else null
         val targetBalls = detectObjectBalls(pixels, width, height, table, cueBall, ballRadius)
 
         return DetectionResult(
             tableBounds = table,
             cueBall = cueBall,
             targetBalls = targetBalls,
-            aimDirection = aimDir,
-            hasValidAim = isValid,
+            aimDirection = aimDirection,
+            hasValidAim = hasValidAim,
             frameWidth = width,
             frameHeight = height
         )
@@ -148,152 +159,161 @@ class TableAndBallDetector(
         )
     }
 
-    private fun findWhiteClusters(
+    /**
+     * Finds the in-game target crosshair ring (hollow circle of radius ~10px on the aimed ball).
+     */
+    private fun findTargetRing(
         pixels: IntArray,
         width: Int,
         height: Int,
         table: TableBounds,
         ballRadius: Float
-    ): List<Vector2D> {
-        val startX = max(0, (table.xMin + 5).toInt())
-        val endX = min(width - 1, (table.xMax - 5).toInt())
-        val startY = max(0, (table.yMin + 5).toInt())
-        val endY = min(height - 1, (table.yMax - 5).toInt())
+    ): Vector2D? {
+        val startX = max(0, (table.xMin + ballRadius).toInt())
+        val endX = min(width - 1, (table.xMax - ballRadius).toInt())
+        val startY = max(0, (table.yMin + ballRadius).toInt())
+        val endY = min(height - 1, (table.yMax - ballRadius).toInt())
 
-        val clusters = ArrayList<Vector2D>()
-        val counts = ArrayList<Int>()
+        var bestRing: Vector2D? = null
+        var maxRingScore = 0
 
-        val step = 2
-        val clusterDistSq = (ballRadius * 1.2f) * (ballRadius * 1.2f)
+        val step = 3
+        val sampleAngles = 18
+        val ringRadius = ballRadius * 1.0f
 
         for (y in startY until endY step step) {
             val rowOffset = y * width
             for (x in startX until endX step step) {
-                val color = pixels[rowOffset + x]
+                val centerColor = pixels[rowOffset + x]
+                val cr = (centerColor shr 16) and 0xFF
+                val cg = (centerColor shr 8) and 0xFF
+                val cb = centerColor and 0xFF
+
+                // Ring center is an object ball (non-white center)
+                if (cr > 225 && cg > 225 && cb > 225) continue
+
+                var whitePerimeter = 0
+                for (i in 0 until sampleAngles) {
+                    val rad = (2.0 * Math.PI * i / sampleAngles).toFloat()
+                    val px = (x + cos(rad) * ringRadius).toInt()
+                    val py = (y + sin(rad) * ringRadius).toInt()
+                    if (px in 0 until width && py in 0 until height) {
+                        val color = pixels[py * width + px]
+                        val r = (color shr 16) and 0xFF
+                        val g = (color shr 8) and 0xFF
+                        val b = color and 0xFF
+                        if (r > 190 && g > 190 && b > 190 && abs(r - g) < 30 && abs(g - b) < 30) {
+                            whitePerimeter++
+                        }
+                    }
+                }
+
+                if (whitePerimeter >= 9 && whitePerimeter > maxRingScore) {
+                    maxRingScore = whitePerimeter
+                    bestRing = Vector2D(x.toFloat(), y.toFloat())
+                }
+            }
+        }
+
+        return bestRing
+    }
+
+    private data class AimResult(
+        val cuePos: Vector2D,
+        val shotVector: Vector2D,
+        val isValid: Boolean
+    )
+
+    /**
+     * Traces reverse white guideline from the Target Ring to locate the Cue Ball and forward shot vector.
+     */
+    private fun traceAimLineFromTarget(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        targetRing: Vector2D,
+        table: TableBounds,
+        ballRadius: Float
+    ): AimResult {
+        val numAngles = 180
+        var bestAngle = 0f
+        var maxWhiteness = 0
+
+        for (i in 0 until numAngles) {
+            val angle = (2.0 * Math.PI * i / numAngles).toFloat()
+            val cosA = cos(angle)
+            val sinA = sin(angle)
+
+            var whiteCount = 0
+            var d = ballRadius * 1.5f
+            while (d < width * 0.5f) {
+                val px = (targetRing.x + cosA * d).toInt()
+                val py = (targetRing.y + sinA * d).toInt()
+                if (px in 0 until width && py in 0 until height) {
+                    val color = pixels[py * width + px]
+                    val r = (color shr 16) and 0xFF
+                    val g = (color shr 8) and 0xFF
+                    val b = color and 0xFF
+                    if (r > 185 && g > 185 && b > 185) {
+                        whiteCount++
+                    }
+                }
+                d += 6.0f
+            }
+
+            if (whiteCount > maxWhiteness) {
+                maxWhiteness = whiteCount
+                bestAngle = angle
+            }
+        }
+
+        if (maxWhiteness < 5) {
+            return AimResult(Vector2D.ZERO, Vector2D.ZERO, false)
+        }
+
+        // Ray from targetRing along bestAngle points towards Cue Ball.
+        // Trace along bestAngle to find where the solid white Cue Ball is located
+        val cosBest = cos(bestAngle)
+        val sinBest = sin(bestAngle)
+        var cueCenter: Vector2D? = null
+
+        var d = ballRadius * 2.0f
+        while (d < width * 0.65f) {
+            val cx = (targetRing.x + cosBest * d).toInt()
+            val cy = (targetRing.y + sinBest * d).toInt()
+            if (cx in 0 until width && cy in 0 until height) {
+                val color = pixels[cy * width + cx]
                 val r = (color shr 16) and 0xFF
                 val g = (color shr 8) and 0xFF
                 val b = color and 0xFF
 
-                if (r > 195 && g > 195 && b > 195 && abs(r - g) < 30 && abs(g - b) < 30) {
-                    var added = false
-                    for (i in clusters.indices) {
-                        val c = clusters[i]
-                        val dSq = (x - c.x) * (x - c.x) + (y - c.y) * (y - c.y)
-                        if (dSq < clusterDistSq) {
-                            val cnt = counts[i]
-                            clusters[i] = Vector2D((c.x * cnt + x) / (cnt + 1), (c.y * cnt + y) / (cnt + 1))
-                            counts[i] = cnt + 1
-                            added = true
+                // Check for solid white ball disc
+                if (r > 210 && g > 210 && b > 210) {
+                    var discWhite = true
+                    for (off in intArrayOf(-4, 4)) {
+                        val c1 = if (cx + off in 0 until width) pixels[cy * width + (cx + off)] else 0
+                        val c2 = if (cy + off in 0 until height) pixels[(cy + off) * width + cx] else 0
+                        val r1 = (c1 shr 16) and 0xFF
+                        val r2 = (c2 shr 16) and 0xFF
+                        if (r1 < 180 || r2 < 180) {
+                            discWhite = false
                             break
                         }
                     }
-                    if (!added) {
-                        clusters.add(Vector2D(x.toFloat(), y.toFloat()))
-                        counts.add(1)
+                    if (discWhite) {
+                        cueCenter = Vector2D(cx.toFloat(), cy.toFloat())
+                        break
                     }
                 }
             }
+            d += 4.0f
         }
 
-        val result = ArrayList<Vector2D>()
-        for (i in clusters.indices) {
-            if (counts[i] >= 6) {
-                result.add(clusters[i])
-            }
-        }
-        return result
-    }
+        val cuePos = cueCenter ?: Vector2D(targetRing.x + cosBest * ballRadius * 8f, targetRing.y + sinBest * ballRadius * 8f)
+        // Shot vector travels FROM Cue Ball TO Target Ring:
+        val shotVector = (targetRing - cuePos).normalized()
 
-    private data class AimLineSolution(
-        val cuePos: Vector2D?,
-        val aimDir: Vector2D,
-        val isValid: Boolean
-    )
-
-    private fun solveAimLine(
-        pixels: IntArray,
-        width: Int,
-        height: Int,
-        clusters: List<Vector2D>,
-        table: TableBounds,
-        ballRadius: Float
-    ): AimLineSolution {
-        if (clusters.size < 2) return AimLineSolution(null, Vector2D.ZERO, false)
-
-        var bestLine: List<Vector2D>? = null
-        var maxCollinear = 0
-
-        for (i in clusters.indices) {
-            for (j in (i + 1) until clusters.size) {
-                val p1 = clusters[i]
-                val p2 = clusters[j]
-                val dx = p2.x - p1.x
-                val dy = p2.y - p1.y
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist < 20f || dist > width * 0.7f) continue
-
-                val ux = dx / dist
-                val uy = dy / dist
-
-                val collinear = ArrayList<Vector2D>()
-                collinear.add(p1)
-                collinear.add(p2)
-
-                for (k in clusters.indices) {
-                    if (k == i || k == j) continue
-                    val pk = clusters[k]
-                    val perpDist = abs((pk.x - p1.x) * uy - (pk.y - p1.y) * ux)
-                    if (perpDist < 5.5f) {
-                        collinear.add(pk)
-                    }
-                }
-
-                if (collinear.size > maxCollinear) {
-                    maxCollinear = collinear.size
-                    bestLine = collinear
-                }
-            }
-        }
-
-        if (bestLine == null || maxCollinear < 3) {
-            return AimLineSolution(clusters.firstOrNull(), Vector2D.ZERO, false)
-        }
-
-        // Sort collinear dots along the axis
-        val p0 = bestLine[0]
-        val pLast = bestLine[bestLine.size - 1]
-        val axis = (pLast - p0).normalized()
-
-        val sorted = bestLine.sortedBy { (it.x - p0.x) * axis.x + (it.y - p0.y) * axis.y }
-        val endA = sorted.first()
-        val endB = sorted.last()
-
-        // Distinguish cue stick end vs target ball end by checking texture along the ray
-        val checkDist = (ballRadius * 2.5f).toInt()
-        val aX = (endA.x - axis.x * checkDist).toInt().coerceIn(0, width - 1)
-        val aY = (endA.y - axis.y * checkDist).toInt().coerceIn(0, height - 1)
-        val bX = (endB.x + axis.x * checkDist).toInt().coerceIn(0, width - 1)
-        val bY = (endB.y + axis.y * checkDist).toInt().coerceIn(0, height - 1)
-
-        val colorA = pixels[aY * width + aX]
-        val colorB = pixels[bY * width + bX]
-
-        val rA = (colorA shr 16) and 0xFF
-        val bA = colorA and 0xFF
-        val rB = (colorB shr 16) and 0xFF
-        val bB = colorB and 0xFF
-
-        // Wood / stick texture has strong red-over-blue contrast compared to cyan felt
-        val stickAtA = rA > (bA * 1.25f) && rA > 100
-        val stickAtB = rB > (bB * 1.25f) && rB > 100
-
-        val (cuePos, shotDir) = if (stickAtA || (!stickAtB && (endA.y > endB.y))) {
-            Pair(endA, axis)
-        } else {
-            Pair(endB, -axis)
-        }
-
-        return AimLineSolution(cuePos, shotDir, true)
+        return AimResult(cuePos, shotVector, true)
     }
 
     private fun detectObjectBalls(

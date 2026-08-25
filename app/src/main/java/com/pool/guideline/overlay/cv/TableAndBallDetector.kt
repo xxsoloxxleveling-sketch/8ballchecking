@@ -110,8 +110,8 @@ class TableAndBallDetector(
     }
 
     fun processIntPixels(pixels: IntArray, width: Int, height: Int): DetectionResult {
-        // Step 1: Check Explicit Table Calibration (Never use guessed bounds!)
-        val table = TableBoundsCalibration.getTableBounds(context)
+        // Step 1: Check Explicit Table Calibration scaled to this frame resolution
+        val table = TableBoundsCalibration.getTableBounds(context, width, height)
         if (table == null || !table.isValid) {
             return DetectionResult(
                 tableBounds = TableBounds.EMPTY,

@@ -8,7 +8,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.pool.guideline.overlay.cv.TableBounds
 import com.pool.guideline.overlay.cv.TableBoundsCalibration
 
 /**
@@ -43,15 +42,15 @@ class CalibrationActivity : AppCompatActivity() {
         }
         layout.addView(descText)
 
+        val isCalibratedNow = TableBoundsCalibration.isCalibrated(this)
         val statusText = TextView(this).apply {
-            val bounds = TableBoundsCalibration.getTableBounds(this@CalibrationActivity)
-            text = if (bounds != null) {
-                "STATUS: ✅ CALIBRATED\n[${bounds.xMin.toInt()}, ${bounds.yMin.toInt()} -> ${bounds.xMax.toInt()}, ${bounds.yMax.toInt()}]"
+            text = if (isCalibratedNow) {
+                "STATUS: ✅ CALIBRATED & ACTIVE"
             } else {
                 "STATUS: ⚠️ NOT CALIBRATED\n(Overlay will stay paused until calibrated)"
             }
             textSize = 15f
-            setTextColor(if (bounds != null) Color.parseColor("#00E676") else Color.parseColor("#FFAB00"))
+            setTextColor(if (isCalibratedNow) Color.parseColor("#00E676") else Color.parseColor("#FFAB00"))
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, 32)
         }
@@ -65,19 +64,19 @@ class CalibrationActivity : AppCompatActivity() {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(24, 32, 24, 32)
             setOnClickListener {
-                val displayMetrics = resources.displayMetrics
-                val w = displayMetrics.widthPixels.toFloat()
-                val h = displayMetrics.heightPixels.toFloat()
-                val bounds = TableBounds(
-                    xMin = w * 0.1270f,
-                    yMin = h * 0.2922f,
-                    xMax = w * 0.8721f,
-                    yMax = h * 0.8703f
+                TableBoundsCalibration.saveTableBoundsNormalized(
+                    this@CalibrationActivity,
+                    fracXMin = 0.1270f,
+                    fracYMin = 0.2922f,
+                    fracXMax = 0.8721f,
+                    fracYMax = 0.8703f
                 )
-                TableBoundsCalibration.saveTableBounds(this@CalibrationActivity, bounds)
-                statusText.text = "STATUS: ✅ CALIBRATED\n[${bounds.xMin.toInt()}, ${bounds.yMin.toInt()} -> ${bounds.xMax.toInt()}, ${bounds.yMax.toInt()}]"
+                statusText.text = "STATUS: ✅ CALIBRATED & ACTIVE"
                 statusText.setTextColor(Color.parseColor("#00E676"))
-                Toast.makeText(this@CalibrationActivity, "Table Bounds Calibrated & Saved!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@CalibrationActivity, "Table Calibrated! Returning...", Toast.LENGTH_SHORT).show()
+                postDelayed({
+                    finish()
+                }, 500)
             }
         }
         val calParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {

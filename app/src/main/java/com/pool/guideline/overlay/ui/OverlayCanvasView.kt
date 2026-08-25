@@ -178,11 +178,13 @@ class OverlayCanvasView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
         if (!isTableCalibrated && event.action == android.view.MotionEvent.ACTION_UP) {
-            val intent = android.content.Intent(context, CalibrationActivity::class.java).apply {
-                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+            if (event.y < height * 0.25f) {
+                val intent = android.content.Intent(context, CalibrationActivity::class.java).apply {
+                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                context.startActivity(intent)
+                return true
             }
-            context.startActivity(intent)
-            return true
         }
         return super.onTouchEvent(event)
     }

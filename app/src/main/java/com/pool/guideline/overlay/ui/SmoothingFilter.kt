@@ -59,19 +59,9 @@ class SmoothingFilter(
         // Smooth Deflection Heading Angle
         val defAngle = smoothAngle(raw.deflectionAngleRad, isTarget = false)
 
-        val targetDir = Vector2D.fromAngle(targetAngle)
-        val defDir = Vector2D.fromAngle(defAngle)
-
-        val targetEnd = target + (targetDir * 450.0f)
-        val defEnd = ghost + (defDir * 200.0f)
-
         return raw.copy(
             ghostBallCenter = ghost,
             targetBallCenter = target,
-            targetPathStart = target,
-            targetPathEnd = targetEnd,
-            cueDeflectionStart = ghost,
-            cueDeflectionEnd = defEnd,
             targetAngleRad = targetAngle,
             deflectionAngleRad = defAngle
         )

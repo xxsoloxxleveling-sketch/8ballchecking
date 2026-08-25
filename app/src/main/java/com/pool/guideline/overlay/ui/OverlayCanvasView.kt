@@ -13,9 +13,13 @@ import com.pool.guideline.overlay.cv.TableBounds
 import com.pool.guideline.overlay.physics.TrajectoryResult
 
 /**
- * High-performance, hardware-accelerated transparent overlay view.
- * Renders billiard trajectory lines, ghost ball outlines, and deflection vectors.
- * Adheres strictly to zero-heap-allocation render loop mandates.
+ * High-performance hardware-accelerated transparent overlay view.
+ * Renders:
+ * 1. Primary cue aiming line + bank reflections
+ * 2. Ghost ball contact ring
+ * 3. Object ball multi-cushion bank trajectories (zigzagging into pockets)
+ * 4. Post-impact cue ball deflection paths
+ * 5. Multi-ball break shot projection paths with individual ball colors
  */
 class OverlayCanvasView @JvmOverloads constructor(
     context: Context,
@@ -27,7 +31,7 @@ class OverlayCanvasView @JvmOverloads constructor(
     private var currentTrajectory: TrajectoryResult = TrajectoryResult.EMPTY
     private var currentTableBounds: TableBounds = TableBounds.EMPTY
 
-    // Coordinate scaling between downsampled CV frame and physical display
+    // Coordinate scaling
     var scaleX: Float = 1.0f
     var scaleY: Float = 1.0f
     var showDebugBounds: Boolean = false
@@ -39,27 +43,27 @@ class OverlayCanvasView @JvmOverloads constructor(
     private var currentFps = 0f
 
     // ------------------------------------------------------------------------
-    // Pre-allocated Paint Objects (Zero-allocation in onDraw)
+    // Pre-allocated Paint Objects
     // ------------------------------------------------------------------------
 
     private val cueRayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dpToPx(4.0f)
-        color = Color.argb(220, 255, 255, 255)
+        strokeWidth = dpToPx(3.8f)
+        color = Color.argb(240, 255, 255, 255)
         strokeCap = Paint.Cap.ROUND
     }
 
     private val cushionRayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dpToPx(3.0f)
-        color = Color.argb(160, 100, 220, 255)
+        color = Color.argb(190, 120, 230, 255)
         strokeCap = Paint.Cap.ROUND
         pathEffect = DashPathEffect(floatArrayOf(15f, 10f), 0f)
     }
 
     private val ghostBallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dpToPx(2.0f)
+        strokeWidth = dpToPx(2.2f)
         color = Color.WHITE
         pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
     }
@@ -72,8 +76,16 @@ class OverlayCanvasView @JvmOverloads constructor(
     private val targetPathPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dpToPx(3.5f)
-        color = Color.rgb(57, 255, 20) // Neon green
+        color = Color.rgb(57, 255, 20) // Neon lime green
         strokeCap = Paint.Cap.ROUND
+    }
+
+    private val targetBankPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dpToPx(3.0f)
+        color = Color.rgb(0, 230, 118) // Bright green bank ray
+        strokeCap = Paint.Cap.ROUND
+        pathEffect = DashPathEffect(floatArrayOf(14f, 8f), 0f)
     }
 
     private val deflectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -84,10 +96,16 @@ class OverlayCanvasView @JvmOverloads constructor(
         pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
     }
 
+    private val multiBallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dpToPx(2.8f)
+        strokeCap = Paint.Cap.ROUND
+    }
+
     private val pocketHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dpToPx(3.0f)
-        color = Color.argb(230, 57, 255, 20)
+        strokeWidth = dpToPx(3.5f)
+        color = Color.argb(240, 57, 255, 20)
     }
 
     private val debugPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -102,12 +120,9 @@ class OverlayCanvasView @JvmOverloads constructor(
         setShadowLayer(4f, 2f, 2f, Color.BLACK)
     }
 
-    // Pre-allocated reusable paths and rects
-    private val scratchPath = Path()
     private val scratchRectF = RectF()
 
     init {
-        // Hardware acceleration requirement
         setLayerType(LAYER_TYPE_HARDWARE, null)
     }
 
@@ -129,50 +144,66 @@ class OverlayCanvasView @JvmOverloads constructor(
         val traj = currentTrajectory
         val radius = traj.ballRadius * scaleX
 
-        // 1. Draw Cue Path Segments (and Cushion Bounces)
+        // 1. Draw Cue Pre-Impact Ray Segments
         for (seg in traj.cuePathSegments) {
-            val startX = seg.start.x * scaleX
-            val startY = seg.start.y * scaleY
-            val endX = seg.end.x * scaleX
-            val endY = seg.end.y * scaleY
-
+            val sx = seg.start.x * scaleX
+            val sy = seg.start.y * scaleY
+            val ex = seg.end.x * scaleX
+            val ey = seg.end.y * scaleY
             val paint = if (seg.isCushionBounce) cushionRayPaint else cueRayPaint
-            canvas.drawLine(startX, startY, endX, endY, paint)
+            canvas.drawLine(sx, sy, ex, ey, paint)
         }
 
-        // 2. Draw Ghost Ball & Deflection Paths
+        // 2. Draw Ghost Ball Ring
         if (traj.hasGhostBall) {
             val gx = traj.ghostBallCenter.x * scaleX
             val gy = traj.ghostBallCenter.y * scaleY
-
-            // Ghost ball filled core and dashed boundary
             canvas.drawCircle(gx, gy, radius, ghostBallFillPaint)
             canvas.drawCircle(gx, gy, radius, ghostBallPaint)
 
-            // Target Ball Trajectory Path
-            val tx = traj.targetBallCenter.x * scaleX
-            val ty = traj.targetBallCenter.y * scaleY
-            val tEndX = traj.targetPathEnd.x * scaleX
-            val tEndY = traj.targetPathEnd.y * scaleY
-            canvas.drawLine(tx, ty, tEndX, tEndY, targetPathPaint)
+            // 3. Draw Object Ball Multi-Cushion Bank Paths (Zigzag to Pocket - Image 1)
+            for (seg in traj.targetBallSegments) {
+                val sx = seg.start.x * scaleX
+                val sy = seg.start.y * scaleY
+                val ex = seg.end.x * scaleX
+                val ey = seg.end.y * scaleY
+                val paint = if (seg.isCushionBounce) targetBankPaint else targetPathPaint
+                canvas.drawLine(sx, sy, ex, ey, paint)
+            }
 
-            // 90-degree Cue Ball Deflection Path
-            val defEndX = traj.cueDeflectionEnd.x * scaleX
-            val defEndY = traj.cueDeflectionEnd.y * scaleY
-            canvas.drawLine(gx, gy, defEndX, defEndY, deflectionPaint)
+            // 4. Draw Post-Impact Cue Ball Deflection Bank Paths (Image 2)
+            for (seg in traj.cuePostImpactSegments) {
+                val sx = seg.start.x * scaleX
+                val sy = seg.start.y * scaleY
+                val ex = seg.end.x * scaleX
+                val ey = seg.end.y * scaleY
+                canvas.drawLine(sx, sy, ex, ey, deflectionPaint)
+            }
 
-            // Pocket Highlight Indicator
+            // 5. Draw Multi-Ball Break Shot Simulation (Image 3)
+            for (ballPath in traj.multiBallPaths) {
+                multiBallPaint.color = ballPath.ballColor
+                for (seg in ballPath.segments) {
+                    val sx = seg.start.x * scaleX
+                    val sy = seg.start.y * scaleY
+                    val ex = seg.end.x * scaleX
+                    val ey = seg.end.y * scaleY
+                    canvas.drawLine(sx, sy, ex, ey, multiBallPaint)
+                }
+            }
+
+            // 6. Pocket Highlight
             traj.bestPocket?.let { pocket ->
-                if (traj.pocketScore > 0.3f) {
+                if (traj.pocketScore > 0.25f) {
                     val px = pocket.position.x * scaleX
                     val py = pocket.position.y * scaleY
-                    val pRad = pocket.captureRadius * scaleX * (0.8f + 0.2f * traj.pocketScore)
+                    val pRad = pocket.captureRadius * scaleX * (0.85f + 0.2f * traj.pocketScore)
                     canvas.drawCircle(px, py, pRad, pocketHighlightPaint)
                 }
             }
         }
 
-        // 3. Optional Debug Overlay
+        // Debug ROI Bounds
         if (showDebugBounds && currentTableBounds.isValid) {
             scratchRectF.set(
                 currentTableBounds.xMin * scaleX,

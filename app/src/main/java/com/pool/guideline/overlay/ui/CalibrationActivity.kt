@@ -84,6 +84,14 @@ class CalibrationActivity : Activity() {
         }
         layout.addView(toggleDebugBtn)
 
+        val closeBtn = Button(this).apply {
+            text = "Done / Return"
+            setOnClickListener {
+                finish()
+            }
+        }
+        layout.addView(closeBtn)
+
         setContentView(layout)
     }
 }

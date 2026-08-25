@@ -1,7 +1,6 @@
 package com.pool.guideline.overlay.cv
 
 import com.pool.guideline.overlay.physics.Vector2D
-import kotlin.math.max
 import kotlin.math.min
 
 data class ResolvedAim(
@@ -14,16 +13,22 @@ data class ResolvedAim(
 /**
  * Boundary-Based Polarity Resolver.
  * Resolves the true forward shooting direction from an unoriented collinear axis line.
+ *
+ * Tier 1 (Primary): Geometric boundary probing against table bounds.
+ * Tier 2 (Fallback): Wood vs felt texture sampling (used only when Tier 1 is ambiguous).
+ * Tier 3 (Safety): Returns NULL to skip frame rather than guessing.
  */
 object AimDirectionResolver {
 
     /**
      * Resolves forward shooting direction.
      *
-     * Logic, in priority order:
-     * 1. Sample wood vs felt texture along candidate directions (R > 105 and R > B * 1.2 = wood stick; pick felt side).
-     * 2. Project probe points along +axisDir and -axisDir at probe distance D.
-     *    If exactly ONE probe lands inside tableBounds, return that direction.
+     * Logic, in strict priority order:
+     * 1. Project a probe point along +axisDir and -axisDir from the cue ball at a fixed distance
+     *    (half the shorter table-bounds dimension).
+     *    If exactly ONE probe lands inside tableBounds, return that direction immediately.
+     * 2. If both or neither land inside (e.g. shots near center or close to a rail), fall back to
+     *    wood vs felt texture sampling (R > 110 and R > B * 1.25 = wood stick; pick felt side).
      * 3. If still ambiguous, return NULL to safely skip frame rendering.
      */
     fun resolveForwardDirection(
@@ -46,11 +51,40 @@ object AimDirectionResolver {
         val innerMaxY = tableBounds.yMax - ballRadius * 0.5f
 
         // ------------------------------------------------------------------------
-        // Priority 1: Wood vs Felt Texture Sampling
+        // Tier 1 (Primary): Geometric Boundary Probing (Half Shorter Dimension)
+        // ------------------------------------------------------------------------
+        val shorterDimension = min(tableBounds.width, tableBounds.height)
+        val probeDistance = (shorterDimension * 0.50f).coerceAtLeast(ballRadius * 3f)
+
+        val probePlus = cueBallPos + (u * probeDistance)
+        val probeMinus = cueBallPos - (u * probeDistance)
+
+        val plusInside = isInsideBounds(probePlus, innerMinX, innerMaxX, innerMinY, innerMaxY)
+        val minusInside = isInsideBounds(probeMinus, innerMinX, innerMaxX, innerMinY, innerMaxY)
+
+        if (plusInside && !minusInside) {
+            return ResolvedAim(
+                forwardDir = u,
+                backwardDir = -u,
+                isFlipped = false,
+                resolutionMethod = "boundary_probe_plus"
+            )
+        } else if (!plusInside && minusInside) {
+            return ResolvedAim(
+                forwardDir = -u,
+                backwardDir = u,
+                isFlipped = true,
+                resolutionMethod = "boundary_probe_minus"
+            )
+        }
+
+        // ------------------------------------------------------------------------
+        // Tier 2 (Fallback Only): Wood vs Felt Texture Sampling
+        // (Executed only when Tier 1 was inconclusive — both or neither inside)
         // ------------------------------------------------------------------------
         var woodScorePlus = 0
         var woodScoreMinus = 0
-        val textureSampleDistances = intArrayOf(12, 25, 45, 70, 100, 135)
+        val textureSampleDistances = intArrayOf(15, 30, 50, 75, 105, 140)
 
         for (d in textureSampleDistances) {
             // Sample along +u
@@ -58,9 +92,8 @@ object AimDirectionResolver {
             val plusY = (cueBallPos.y + u.y * d).toInt().coerceIn(0, height - 1)
             val colPlus = pixels[plusY * width + plusX]
             val rPlus = (colPlus shr 16) and 0xFF
-            val gPlus = (colPlus shr 8) and 0xFF
             val bPlus = colPlus and 0xFF
-            if (rPlus > 105 && rPlus > bPlus * 1.2f && (gPlus > bPlus || rPlus > gPlus * 1.15f)) {
+            if (rPlus > 110 && rPlus > (bPlus * 1.25f)) {
                 woodScorePlus++
             }
 
@@ -69,9 +102,8 @@ object AimDirectionResolver {
             val minusY = (cueBallPos.y - u.y * d).toInt().coerceIn(0, height - 1)
             val colMinus = pixels[minusY * width + minusX]
             val rMinus = (colMinus shr 16) and 0xFF
-            val gMinus = (colMinus shr 8) and 0xFF
             val bMinus = colMinus and 0xFF
-            if (rMinus > 105 && rMinus > bMinus * 1.2f && (gMinus > bMinus || rMinus > gMinus * 1.15f)) {
+            if (rMinus > 110 && rMinus > (bMinus * 1.25f)) {
                 woodScoreMinus++
             }
         }
@@ -95,40 +127,7 @@ object AimDirectionResolver {
         }
 
         // ------------------------------------------------------------------------
-        // Priority 2: Geometric Boundary Probing
-        // ------------------------------------------------------------------------
-        val probeDistances = floatArrayOf(
-            tableBounds.width * 0.40f,
-            tableBounds.width * 0.60f,
-            max(tableBounds.width, tableBounds.height) * 0.70f
-        )
-
-        for (probeDistance in probeDistances) {
-            val probePlus = cueBallPos + (u * probeDistance)
-            val probeMinus = cueBallPos - (u * probeDistance)
-
-            val plusInside = isInsideBounds(probePlus, innerMinX, innerMaxX, innerMinY, innerMaxY)
-            val minusInside = isInsideBounds(probeMinus, innerMinX, innerMaxX, innerMinY, innerMaxY)
-
-            if (plusInside && !minusInside) {
-                return ResolvedAim(
-                    forwardDir = u,
-                    backwardDir = -u,
-                    isFlipped = false,
-                    resolutionMethod = "boundary_probe_plus"
-                )
-            } else if (!plusInside && minusInside) {
-                return ResolvedAim(
-                    forwardDir = -u,
-                    backwardDir = u,
-                    isFlipped = true,
-                    resolutionMethod = "boundary_probe_minus"
-                )
-            }
-        }
-
-        // ------------------------------------------------------------------------
-        // Priority 3: Fallback / Ambiguous Safety Net
+        // Tier 3: Ambiguous Safety Net — Return NULL to safely skip frame
         // ------------------------------------------------------------------------
         return null
     }

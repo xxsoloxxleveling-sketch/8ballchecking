@@ -2,6 +2,7 @@ package com.pool.guideline.overlay.cv
 
 import com.pool.guideline.overlay.physics.TrajectoryPhysicsEngine
 import com.pool.guideline.overlay.physics.Vector2D
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -122,6 +123,30 @@ class AimDirectionResolverTest {
         assertNotNull("Resolved aim should not be null", resolved)
         // Forward aim must be into the table (positive x)
         assertTrue("Forward aim must point into the table", resolved!!.forwardDir.x > 0f)
+    }
+
+    @Test
+    fun testTier1_boundaryProbe_shortCircuitsWithoutTexture() {
+        // Cue ball sitting near bottom-right cushion, aiming up-left into the table
+        val cueBall = Vector2D(800f, 500f)
+        val unorientedAxis = Vector2D(0.707f, 0.707f) // pointing down-right towards wall
+
+        // Pass clean pixels (ZERO wood texture) -> Tier 1 boundary probe must resolve forward on geometry alone
+        val cleanPixels = IntArray(width * height) { 0xFF004466.toInt() }
+
+        val resolved = AimDirectionResolver.resolveForwardDirection(
+            cueBallPos = cueBall,
+            axisDir = unorientedAxis,
+            tableBounds = tableBounds,
+            pixels = cleanPixels,
+            width = width,
+            height = height
+        )
+
+        assertNotNull("Tier 1 boundary probe must resolve without texture", resolved)
+        assertEquals("Must resolve via boundary_probe_minus", "boundary_probe_minus", resolved!!.resolutionMethod)
+        assertTrue("Forward x must point up-left (negative)", resolved.forwardDir.x < 0f)
+        assertTrue("Forward y must point up-left (negative)", resolved.forwardDir.y < 0f)
     }
 
     @Test

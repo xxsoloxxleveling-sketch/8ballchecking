@@ -122,6 +122,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.btnCalibrateTable.setOnClickListener {
+            val intent = Intent(this, com.pool.guideline.overlay.ui.CalibrationActivity::class.java)
+            startActivity(intent)
+        }
+
         binding.spinnerFeltPreset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 selectedPreset = TableFeltPreset.values()[position]
@@ -210,5 +215,8 @@ class MainActivity : AppCompatActivity() {
             binding.viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.accent_red)
             binding.btnToggleOverlay.text = getString(R.string.btn_start)
         }
+
+        val isCalibrated = com.pool.guideline.overlay.cv.TableBoundsCalibration.getTableBounds(this) != null
+        binding.btnCalibrateTable.text = if (isCalibrated) "Recalibrate Table Bounds" else "Calibrate Table Bounds"
     }
 }

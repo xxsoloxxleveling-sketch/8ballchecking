@@ -161,23 +161,29 @@ class OverlayService : Service() {
     }
 
     fun setOverlayTouchable(touchable: Boolean) {
-        val view = overlayView ?: return
-        val wm = windowManager ?: return
-        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
-        val targetFlags = if (touchable) {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-        } else {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val view = overlayView ?: return@post
+            val wm = windowManager ?: return@post
+            val params = view.layoutParams as? WindowManager.LayoutParams ?: return@post
+            val targetFlags = if (touchable) {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            }
 
-        if (params.flags != targetFlags) {
-            params.flags = targetFlags
-            wm.updateViewLayout(view, params)
+            if (params.flags != targetFlags) {
+                params.flags = targetFlags
+                try {
+                    wm.updateViewLayout(view, params)
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to update view layout: ${e.message}")
+                }
+            }
         }
     }
 

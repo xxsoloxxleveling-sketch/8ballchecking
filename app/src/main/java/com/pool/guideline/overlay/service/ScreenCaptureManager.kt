@@ -103,12 +103,20 @@ class ScreenCaptureManager(
                     } catch (t: Throwable) {
                         Log.e(tag, "CV error: ${t.message}")
                     } finally {
-                        image.close()
+                        try {
+                            image.close()
+                        } catch (e: Exception) {
+                            Log.w(tag, "Image close error: ${e.message}")
+                        }
                         processingFrame.set(false)
                     }
                 }
             } else {
-                image.close()
+                try {
+                    image.close()
+                } catch (e: Exception) {
+                    Log.w(tag, "Image close error: ${e.message}")
+                }
             }
         }, workerHandler)
     }

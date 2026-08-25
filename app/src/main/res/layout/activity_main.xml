@@ -118,11 +118,11 @@
         <Button
             android:id="@+id/btnCalibrateTable"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/card_background"
-            android:text="Calibrate Table Bounds"
-            android:textColor="@color/primary"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:backgroundTint="@color/surface_dark"
+            android:text="🎯 CALIBRATE TABLE BOUNDS (TAP HERE)"
+            android:textColor="#FFFFFF"
             android:textSize="15sp"
             android:textStyle="bold"
             android:textAllCaps="false" />

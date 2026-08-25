@@ -217,6 +217,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         val isCalibrated = com.pool.guideline.overlay.cv.TableBoundsCalibration.getTableBounds(this) != null
-        binding.btnCalibrateTable.text = if (isCalibrated) "Recalibrate Table Bounds" else "Calibrate Table Bounds"
+        if (isCalibrated) {
+            binding.btnCalibrateTable.text = "✅ TABLE CALIBRATED (TAP TO RECALIBRATE)"
+            binding.btnCalibrateTable.backgroundTintList = ContextCompat.getColorStateList(this, R.color.surface_dark)
+        } else {
+            binding.btnCalibrateTable.text = "🎯 CALIBRATE TABLE (TAP HERE TO SETUP)"
+            binding.btnCalibrateTable.backgroundTintList = ContextCompat.getColorStateList(this, R.color.secondary)
+        }
     }
 }

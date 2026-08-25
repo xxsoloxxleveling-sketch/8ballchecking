@@ -56,8 +56,8 @@ class ScreenCaptureManager(
         processWidth = ((metrics.widthPixels * downsampleFactor).toInt() / 16) * 16
         processHeight = ((metrics.heightPixels * downsampleFactor).toInt() / 16) * 16
 
-        overlayView.scaleX = metrics.widthPixels.toFloat() / processWidth.toFloat()
-        overlayView.scaleY = metrics.heightPixels.toFloat() / processHeight.toFloat()
+        overlayView.coordScaleX = metrics.widthPixels.toFloat() / processWidth.toFloat()
+        overlayView.coordScaleY = metrics.heightPixels.toFloat() / processHeight.toFloat()
 
         Log.i(tag, "Starting ScreenCapture: Screen=${metrics.widthPixels}x${metrics.heightPixels}, Process=${processWidth}x${processHeight}")
 

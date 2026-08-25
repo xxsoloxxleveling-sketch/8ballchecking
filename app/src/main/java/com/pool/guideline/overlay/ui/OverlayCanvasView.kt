@@ -32,8 +32,8 @@ class OverlayCanvasView @JvmOverloads constructor(
     private var currentTableBounds: TableBounds = TableBounds.EMPTY
 
     // Coordinate scaling
-    var scaleX: Float = 1.0f
-    var scaleY: Float = 1.0f
+    var coordScaleX: Float = 1.0f
+    var coordScaleY: Float = 1.0f
     var showDebugBounds: Boolean = false
     var showFps: Boolean = true
 
@@ -142,41 +142,41 @@ class OverlayCanvasView @JvmOverloads constructor(
         updateFps()
 
         val traj = currentTrajectory
-        val radius = traj.ballRadius * scaleX
+        val radius = traj.ballRadius * coordScaleX
 
         // 1. Draw Cue Pre-Impact Ray Segments
         for (seg in traj.cuePathSegments) {
-            val sx = seg.start.x * scaleX
-            val sy = seg.start.y * scaleY
-            val ex = seg.end.x * scaleX
-            val ey = seg.end.y * scaleY
+            val sx = seg.start.x * coordScaleX
+            val sy = seg.start.y * coordScaleY
+            val ex = seg.end.x * coordScaleX
+            val ey = seg.end.y * coordScaleY
             val paint = if (seg.isCushionBounce) cushionRayPaint else cueRayPaint
             canvas.drawLine(sx, sy, ex, ey, paint)
         }
 
         // 2. Draw Ghost Ball Ring
         if (traj.hasGhostBall) {
-            val gx = traj.ghostBallCenter.x * scaleX
-            val gy = traj.ghostBallCenter.y * scaleY
+            val gx = traj.ghostBallCenter.x * coordScaleX
+            val gy = traj.ghostBallCenter.y * coordScaleY
             canvas.drawCircle(gx, gy, radius, ghostBallFillPaint)
             canvas.drawCircle(gx, gy, radius, ghostBallPaint)
 
             // 3. Draw Object Ball Multi-Cushion Bank Paths (Zigzag to Pocket - Image 1)
             for (seg in traj.targetBallSegments) {
-                val sx = seg.start.x * scaleX
-                val sy = seg.start.y * scaleY
-                val ex = seg.end.x * scaleX
-                val ey = seg.end.y * scaleY
+                val sx = seg.start.x * coordScaleX
+                val sy = seg.start.y * coordScaleY
+                val ex = seg.end.x * coordScaleX
+                val ey = seg.end.y * coordScaleY
                 val paint = if (seg.isCushionBounce) targetBankPaint else targetPathPaint
                 canvas.drawLine(sx, sy, ex, ey, paint)
             }
 
             // 4. Draw Post-Impact Cue Ball Deflection Bank Paths (Image 2)
             for (seg in traj.cuePostImpactSegments) {
-                val sx = seg.start.x * scaleX
-                val sy = seg.start.y * scaleY
-                val ex = seg.end.x * scaleX
-                val ey = seg.end.y * scaleY
+                val sx = seg.start.x * coordScaleX
+                val sy = seg.start.y * coordScaleY
+                val ex = seg.end.x * coordScaleX
+                val ey = seg.end.y * coordScaleY
                 canvas.drawLine(sx, sy, ex, ey, deflectionPaint)
             }
 
@@ -184,10 +184,10 @@ class OverlayCanvasView @JvmOverloads constructor(
             for (ballPath in traj.multiBallPaths) {
                 multiBallPaint.color = ballPath.ballColor
                 for (seg in ballPath.segments) {
-                    val sx = seg.start.x * scaleX
-                    val sy = seg.start.y * scaleY
-                    val ex = seg.end.x * scaleX
-                    val ey = seg.end.y * scaleY
+                    val sx = seg.start.x * coordScaleX
+                    val sy = seg.start.y * coordScaleY
+                    val ex = seg.end.x * coordScaleX
+                    val ey = seg.end.y * coordScaleY
                     canvas.drawLine(sx, sy, ex, ey, multiBallPaint)
                 }
             }
@@ -195,9 +195,9 @@ class OverlayCanvasView @JvmOverloads constructor(
             // 6. Pocket Highlight
             traj.bestPocket?.let { pocket ->
                 if (traj.pocketScore > 0.25f) {
-                    val px = pocket.position.x * scaleX
-                    val py = pocket.position.y * scaleY
-                    val pRad = pocket.captureRadius * scaleX * (0.85f + 0.2f * traj.pocketScore)
+                    val px = pocket.position.x * coordScaleX
+                    val py = pocket.position.y * coordScaleY
+                    val pRad = pocket.captureRadius * coordScaleX * (0.85f + 0.2f * traj.pocketScore)
                     canvas.drawCircle(px, py, pRad, pocketHighlightPaint)
                 }
             }
@@ -206,10 +206,10 @@ class OverlayCanvasView @JvmOverloads constructor(
         // Debug ROI Bounds
         if (showDebugBounds && currentTableBounds.isValid) {
             scratchRectF.set(
-                currentTableBounds.xMin * scaleX,
-                currentTableBounds.yMin * scaleY,
-                currentTableBounds.xMax * scaleX,
-                currentTableBounds.yMax * scaleY
+                currentTableBounds.xMin * coordScaleX,
+                currentTableBounds.yMin * coordScaleY,
+                currentTableBounds.xMax * coordScaleX,
+                currentTableBounds.yMax * coordScaleY
             )
             canvas.drawRect(scratchRectF, debugPaint)
         }

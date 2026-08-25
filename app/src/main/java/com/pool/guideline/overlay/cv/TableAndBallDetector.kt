@@ -1,5 +1,6 @@
 package com.pool.guideline.overlay.cv
 
+import android.content.Context
 import android.graphics.Color
 import com.pool.guideline.overlay.physics.Vector2D
 import java.nio.ByteBuffer
@@ -26,24 +27,32 @@ data class RawContourData(
     val isAccepted: Boolean = true
 )
 
+data class AxisFitResult(
+    val cueBallPos: Vector2D,
+    val axisDir: Vector2D // Pure unit vector, unoriented
+)
+
 data class DetectionResult(
     val tableBounds: TableBounds = TableBounds.EMPTY,
+    val isTableCalibrated: Boolean = true,
     val cueBall: BallData? = null,
     val targetRingPos: Vector2D? = null,
     val targetBalls: List<BallData> = emptyList(),
     val rawContours: List<RawContourData> = emptyList(),
     val aimDirection: Vector2D = Vector2D.ZERO,
+    val debugBackwardDirection: Vector2D = Vector2D.ZERO,
     val hasValidAim: Boolean = false,
+    val resolutionMethod: String = "",
     val frameWidth: Int = 0,
     val frameHeight: Int = 0
 )
 
 /**
- * High-Precision Cue-Anchored Aiming Engine for Mock Pool.
- * Features a dual-ended Wood-Texture Polarity Discriminator to ensure the aim vector
- * always shoots forward into the table felt and never backward along the cue stick.
+ * High-Precision Computer Vision Engine for Mock Pool.
+ * Uses persistent calibration, unoriented collinear axis fitting, and boundary-based polarity resolution.
  */
 class TableAndBallDetector(
+    private val context: Context,
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
 ) {
 
@@ -56,8 +65,6 @@ class TableAndBallDetector(
     var valTolerance: Float = 0.40f
 
     private var pixelBuffer: IntArray = IntArray(0)
-    private var cachedTableBounds = TableBounds.EMPTY
-    private var tableDetectInterval = 0
 
     fun calibrateFeltFromRgb(r: Int, g: Int, b: Int) {
         val hsv = FloatArray(3)
@@ -66,7 +73,6 @@ class TableAndBallDetector(
         calibratedSat = hsv[1]
         calibratedVal = hsv[2]
         feltPreset = TableFeltPreset.CUSTOM_CALIBRATED
-        cachedTableBounds = TableBounds.EMPTY
     }
 
     fun processFrame(
@@ -103,20 +109,26 @@ class TableAndBallDetector(
         return processIntPixels(pixelBuffer, width, height)
     }
 
-    private fun processIntPixels(pixels: IntArray, width: Int, height: Int): DetectionResult {
-        if (!cachedTableBounds.isValid || (++tableDetectInterval % 60 == 0)) {
-            cachedTableBounds = detectTableBounds(pixels, width, height)
+    fun processIntPixels(pixels: IntArray, width: Int, height: Int): DetectionResult {
+        // Step 1: Check Explicit Table Calibration (Never use guessed bounds!)
+        val table = TableBoundsCalibration.getTableBounds(context)
+        if (table == null || !table.isValid) {
+            return DetectionResult(
+                tableBounds = TableBounds.EMPTY,
+                isTableCalibrated = false,
+                frameWidth = width,
+                frameHeight = height
+            )
         }
 
-        val table = cachedTableBounds
         val ballRadius = table.estimatedBallRadius
 
-        val tMinX = max(0, (table.xMin + 4).toInt())
-        val tMaxX = min(width - 1, (table.xMax - 4).toInt())
-        val tMinY = max(0, (table.yMin + 4).toInt())
-        val tMaxY = min(height - 1, (table.yMax - 4).toInt())
+        val tMinX = max(0, (table.xMin + 2).toInt())
+        val tMaxX = min(width - 1, (table.xMax - 2).toInt())
+        val tMinY = max(0, (table.yMin + 2).toInt())
+        val tMaxY = min(height - 1, (table.yMax - 2).toInt())
 
-        // Step 1: Collect bright white pixels
+        // Step 2: Collect bright white guideline and ball pixels
         val clusters = ArrayList<Vector2D>()
         val clusterCounts = ArrayList<Int>()
         val clusterDistSq = (ballRadius * 1.0f) * (ballRadius * 1.0f)
@@ -152,10 +164,10 @@ class TableAndBallDetector(
         }
 
         if (clusters.size < 2) {
-            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
+            return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Step 2: Identify Cue Ball Candidates (Solid White 2D Disc)
+        // Step 3: Locate Cue Ball Candidate (Solid White Disc)
         val cueCandidates = ArrayList<Vector2D>()
         val radInt = (ballRadius * 0.65f).toInt().coerceAtLeast(3)
 
@@ -188,190 +200,134 @@ class TableAndBallDetector(
         }
 
         if (cueCandidates.isEmpty()) {
-            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
+            return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Step 3: Find the Collinear Aiming Axis Passing through the Cue Ball
-        var bestCue: Vector2D? = null
-        var bestTarget: Vector2D? = null
-        var bestShotDir = Vector2D.ZERO
-        var maxInliers = 0
+        // Step 4: Fit Unoriented Collinear Axis for Each Cue Candidate
+        var bestFit: AxisFitResult? = null
+        var bestFitInliers: List<Vector2D> = emptyList()
+        var maxInliersCount = 0
 
         for (cue in cueCandidates) {
-            for (p in clusters) {
-                val dx = p.x - cue.x
-                val dy = p.y - cue.y
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist < ballRadius * 1.5f || dist > width * 0.75f) continue
-
-                val ux = dx / dist
-                val uy = dy / dist
-
-                val inliers = ArrayList<Vector2D>()
-                inliers.add(cue)
-                inliers.add(p)
-
-                for (other in clusters) {
-                    if (other !== cue && other !== p) {
-                        val perpDist = abs((other.x - cue.x) * uy - (other.y - cue.y) * ux)
-                        if (perpDist < 6.0f) {
-                            inliers.add(other)
-                        }
-                    }
+            val fit = fitCollinearAxis(clusters, cue, width * 0.75f, ballRadius)
+            if (fit != null) {
+                // Collect inliers for this fit
+                val inliers = clusters.filter {
+                    val perpDist = abs((it.x - cue.x) * fit.axisDir.y - (it.y - cue.y) * fit.axisDir.x)
+                    perpDist < 6.0f
                 }
-
-                if (inliers.size > maxInliers) {
-                    maxInliers = inliers.size
-                    bestCue = cue
-
-                    // Step 4: Wood-Texture Polarity Discriminator
-                    // Check texture behind -u vs ahead of +u to establish true forward shot vector
-                    var stickScoreForward = 0
-                    var stickScoreBackward = 0
-                    val sampleDists = intArrayOf(20, 45, 75, 110, 150)
-
-                    for (d in sampleDists) {
-                        val fwdX = (cue.x + ux * d).toInt().coerceIn(0, width - 1)
-                        val fwdY = (cue.y + uy * d).toInt().coerceIn(0, height - 1)
-                        val colFwd = pixels[fwdY * width + fwdX]
-                        val rFwd = (colFwd shr 16) and 0xFF
-                        val bFwd = colFwd and 0xFF
-                        if (rFwd > 110 && rFwd > bFwd * 1.25f) stickScoreForward++
-
-                        val bwdX = (cue.x - ux * d).toInt().coerceIn(0, width - 1)
-                        val bwdY = (cue.y - uy * d).toInt().coerceIn(0, height - 1)
-                        val colBwd = pixels[bwdY * width + bwdX]
-                        val rBwd = (colBwd shr 16) and 0xFF
-                        val bBwd = colBwd and 0xFF
-                        if (rBwd > 110 && rBwd > bBwd * 1.25f) stickScoreBackward++
-                    }
-
-                    // True shot vector points AWAY from the stick
-                    val trueDir = if (stickScoreForward > stickScoreBackward) {
-                        Vector2D(-ux, -uy)
-                    } else {
-                        Vector2D(ux, uy)
-                    }
-
-                    // Sort inliers along trueDir (forward direction)
-                    val forwardInliers = inliers.filter {
-                        val proj = (it.x - cue.x) * trueDir.x + (it.y - cue.y) * trueDir.y
-                        proj > ballRadius * 0.8f
-                    }.sortedBy { (it.x - cue.x) * trueDir.x + (it.y - cue.y) * trueDir.y }
-
-                    bestTarget = if (forwardInliers.isNotEmpty()) {
-                        forwardInliers.last()
-                    } else {
-                        cue + (trueDir * (ballRadius * 12f))
-                    }
-                    bestShotDir = trueDir
+                if (inliers.size > maxInliersCount) {
+                    maxInliersCount = inliers.size
+                    bestFit = fit
+                    bestFitInliers = inliers
                 }
             }
         }
 
-        if (bestCue == null || bestTarget == null || maxInliers < 3) {
-            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
+        if (bestFit == null || maxInliersCount < 3) {
+            return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Clamp target inside table boundaries
-        val clampedTargetX = bestTarget.x.coerceIn(table.xMin + ballRadius, table.xMax - ballRadius)
-        val clampedTargetY = bestTarget.y.coerceIn(table.yMin + ballRadius, table.yMax - ballRadius)
-        val finalTarget = Vector2D(clampedTargetX, clampedTargetY)
+        // Step 5: Resolve True Forward Aim Polarity
+        val resolved = AimDirectionResolver.resolveForwardDirection(
+            cueBallPos = bestFit.cueBallPos,
+            axisDir = bestFit.axisDir,
+            tableBounds = table,
+            pixels = pixels,
+            width = width,
+            height = height
+        ) ?: return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
 
-        val cueBall = BallData(center = bestCue, radius = ballRadius, type = BallType.CUE)
-        val targetBalls = listOf(BallData(center = finalTarget, radius = ballRadius, type = BallType.OBJECT_SOLID))
+        // Step 6: Find Resolved Target Endpoint along Forward Ray
+        val forwardInliers = bestFitInliers.filter {
+            val proj = (it.x - bestFit.cueBallPos.x) * resolved.forwardDir.x + (it.y - bestFit.cueBallPos.y) * resolved.forwardDir.y
+            proj > ballRadius * 0.8f
+        }.sortedBy { (it.x - bestFit.cueBallPos.x) * resolved.forwardDir.x + (it.y - bestFit.cueBallPos.y) * resolved.forwardDir.y }
+
+        val targetPos = if (forwardInliers.isNotEmpty()) {
+            forwardInliers.last()
+        } else {
+            bestFit.cueBallPos + (resolved.forwardDir * (ballRadius * 12f))
+        }
+
+        // Step 7: Validate Target Endpoint (Strictly within table boundaries)
+        val validTarget = isValidTarget(targetPos, table, ballRadius)
+        if (!validTarget) {
+            return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
+        }
+
+        val cueBall = BallData(center = bestFit.cueBallPos, radius = ballRadius, type = BallType.CUE)
+        val targetBalls = listOf(BallData(center = targetPos, radius = ballRadius, type = BallType.OBJECT_SOLID))
 
         return DetectionResult(
             tableBounds = table,
+            isTableCalibrated = true,
             cueBall = cueBall,
-            targetRingPos = finalTarget,
+            targetRingPos = targetPos,
             targetBalls = targetBalls,
             rawContours = emptyList(),
-            aimDirection = bestShotDir,
+            aimDirection = resolved.forwardDir,
+            debugBackwardDirection = resolved.backwardDir,
             hasValidAim = true,
+            resolutionMethod = resolved.resolutionMethod,
             frameWidth = width,
             frameHeight = height
         )
     }
 
-    private fun detectTableBounds(pixels: IntArray, width: Int, height: Int): TableBounds {
-        val midY = (height * 0.58f).toInt().coerceIn(0, height - 1)
-        val midX = (width * 0.50f).toInt().coerceIn(0, width - 1)
+    /**
+     * Pure unoriented collinear line-fitting function.
+     * Returns ONLY the physical axis line (unit vector), with NO direction decision.
+     */
+    fun fitCollinearAxis(
+        clusters: List<Vector2D>,
+        cueBallPos: Vector2D,
+        maxDist: Float,
+        ballRadius: Float
+    ): AxisFitResult? {
+        var bestDir = Vector2D.ZERO
+        var maxInliers = 0
 
-        var xMin = -1
-        var xMax = -1
-        for (x in 0 until width) {
-            val color = pixels[midY * width + x]
-            if (isFeltColor(color)) {
-                if (xMin == -1) xMin = x
-                xMax = x
+        for (p in clusters) {
+            val dx = p.x - cueBallPos.x
+            val dy = p.y - cueBallPos.y
+            val dist = sqrt(dx * dx + dy * dy)
+            if (dist < ballRadius * 1.5f || dist > maxDist) continue
+
+            val ux = dx / dist
+            val uy = dy / dist
+
+            var inliers = 0
+            for (other in clusters) {
+                val perpDist = abs((other.x - cueBallPos.x) * uy - (other.y - cueBallPos.y) * ux)
+                if (perpDist < 6.0f) {
+                    inliers++
+                }
+            }
+
+            if (inliers > maxInliers) {
+                maxInliers = inliers
+                bestDir = Vector2D(ux, uy)
             }
         }
 
-        var yMin = -1
-        var yMax = -1
-        for (y in 0 until height) {
-            val color = pixels[y * width + midX]
-            if (isFeltColor(color)) {
-                if (yMin == -1) yMin = y
-                yMax = y
-            }
+        return if (maxInliers >= 3) {
+            AxisFitResult(cueBallPos = cueBallPos, axisDir = bestDir.normalized())
+        } else {
+            null
         }
-
-        val minXFrac = if (xMin != -1) xMin.toFloat() / width else 0f
-        val maxXFrac = if (xMax != -1) xMax.toFloat() / width else 0f
-        val minYFrac = if (yMin != -1) yMin.toFloat() / height else 0f
-        val maxYFrac = if (yMax != -1) yMax.toFloat() / height else 0f
-
-        if (minXFrac in 0.08f..0.20f && maxXFrac in 0.80f..0.92f &&
-            minYFrac in 0.22f..0.38f && maxYFrac in 0.78f..0.94f) {
-            return TableBounds(
-                xMin = xMin.toFloat(),
-                yMin = yMin.toFloat(),
-                xMax = xMax.toFloat(),
-                yMax = yMax.toFloat()
-            )
-        }
-
-        return TableBounds(
-            xMin = width * 0.1270f,
-            yMin = height * 0.2922f,
-            xMax = width * 0.8721f,
-            yMax = height * 0.8703f
-        )
     }
 
-    private fun isFeltColor(color: Int): Boolean {
-        val r = (color shr 16) and 0xFF
-        val g = (color shr 8) and 0xFF
-        val b = color and 0xFF
-
-        return when (feltPreset) {
-            TableFeltPreset.CUSTOM_CALIBRATED -> {
-                val hsv = FloatArray(3)
-                Color.RGBToHSV(r, g, b, hsv)
-                val hDiff = abs(hsv[0] - calibratedHue).let { min(it, 360f - it) }
-                val sDiff = abs(hsv[1] - calibratedSat)
-                val vDiff = abs(hsv[2] - calibratedVal)
-                hDiff <= hueTolerance && sDiff <= satTolerance && vDiff <= valTolerance
-            }
-            TableFeltPreset.CYAN_TOURNAMENT -> {
-                b > 90 && g > 75 && b > (r * 1.15f) && g > (r * 1.05f)
-            }
-            TableFeltPreset.CLASSIC_GREEN -> {
-                g > 60 && g > (r * 1.2f) && g > (b * 1.05f)
-            }
-            TableFeltPreset.ROYAL_BLUE -> {
-                b > 80 && b > (r * 1.2f) && b > (g * 0.85f)
-            }
-            TableFeltPreset.MIDNIGHT_RED -> {
-                r > 80 && r > (g * 1.3f) && r > (b * 1.3f)
-            }
-            TableFeltPreset.AUTO -> {
-                (b > 90 && g > 75 && b > (r * 1.12f) && g > (r * 1.02f)) ||
-                (g > 60 && g > (r * 1.15f) && g > (b * 1.02f)) ||
-                (b > 75 && b > (r * 1.15f) && b > (g * 0.85f))
-            }
-        }
+    /**
+     * Validates that the RESOLVED TARGET ENDPOINT resides strictly inside table bounds.
+     * NOTE: This explicitly validates the target point, NOT the cue ball position.
+     */
+    fun isValidTarget(target: Vector2D, tableBounds: TableBounds, ballRadius: Float): Boolean {
+        if (!tableBounds.isValid) return false
+        val left = tableBounds.xMin + ballRadius * 0.5f
+        val right = tableBounds.xMax - ballRadius * 0.5f
+        val top = tableBounds.yMin + ballRadius * 0.5f
+        val bottom = tableBounds.yMax - ballRadius * 0.5f
+        return target.x in left..right && target.y in top..bottom
     }
 }

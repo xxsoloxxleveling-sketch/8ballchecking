@@ -40,7 +40,7 @@ class ScreenCaptureManager(
     private var imageReader: ImageReader? = null
     private var handlerThread: HandlerThread? = null
 
-    private val detector = TableAndBallDetector(TableFeltPreset.AUTO)
+    private val detector = TableAndBallDetector(context, TableFeltPreset.AUTO)
     private val physicsEngine = TrajectoryPhysicsEngine(maxBounces = 4)
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
@@ -127,6 +127,13 @@ class ScreenCaptureManager(
             pixelStride = pixelStride
         )
 
+        overlayView.isTableCalibrated = detection.isTableCalibrated
+
+        if (!detection.isTableCalibrated) {
+            overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds, emptyList(), emptyList())
+            return
+        }
+
         val allAcceptedBalls = ArrayList<BallData>()
         detection.cueBall?.let { allAcceptedBalls.add(it) }
         allAcceptedBalls.addAll(detection.targetBalls)
@@ -140,6 +147,8 @@ class ScreenCaptureManager(
                 tableBounds = detection.tableBounds,
                 ballRadius = detection.tableBounds.estimatedBallRadius
             )
+            overlayView.debugChosenForward = detection.aimDirection
+            overlayView.debugRejectedBackward = detection.debugBackwardDirection
             overlayView.updateTrajectory(trajectory, detection.tableBounds, detection.rawContours, allAcceptedBalls)
         } else {
             overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds, detection.rawContours, allAcceptedBalls)

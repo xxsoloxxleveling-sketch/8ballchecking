@@ -7,10 +7,13 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.pool.guideline.overlay.cv.TableBounds
+import com.pool.guideline.overlay.cv.TableBoundsCalibration
 
 /**
- * Minimal calibration and debug settings activity.
- * Allows live felt HSV calibration, toggling CV debug visualization, and adjusting smoothing sensitivity.
+ * Interactive calibration and debug settings activity.
+ * Allows calibrating and persisting 4-corner table bounds, clearing calibration,
+ * and toggling CV debug visualization.
  */
 class CalibrationActivity : Activity() {
 
@@ -23,24 +26,56 @@ class CalibrationActivity : Activity() {
         }
 
         val titleText = TextView(this).apply {
-            text = "Mock Pool CV Calibration & Settings"
+            text = "Mock Pool Table Calibration & Settings"
             textSize = 20f
         }
         layout.addView(titleText)
 
-        val prefs = getSharedPreferences("pool_cv_prefs", Context.MODE_PRIVATE)
+        val statusText = TextView(this).apply {
+            val bounds = TableBoundsCalibration.getTableBounds(this@CalibrationActivity)
+            text = if (bounds != null) {
+                "Status: Calibrated [${bounds.xMin.toInt()}, ${bounds.yMin.toInt()} -> ${bounds.xMax.toInt()}, ${bounds.yMax.toInt()}]"
+            } else {
+                "Status: NOT CALIBRATED (Overlay will skip until calibrated)"
+            }
+            textSize = 14f
+            setPadding(0, 16, 0, 16)
+        }
+        layout.addView(statusText)
 
-        val recalibrateBtn = Button(this).apply {
-            text = "Auto-Calibrate Table Felt HSV"
+        val calibrateBtn = Button(this).apply {
+            text = "Set Standard Table Bounds"
             setOnClickListener {
-                prefs.edit().putBoolean("force_recalibrate", true).apply()
-                Toast.makeText(this@CalibrationActivity, "Table felt will auto-sample on next frame", Toast.LENGTH_SHORT).show()
+                val displayMetrics = resources.displayMetrics
+                val w = displayMetrics.widthPixels.toFloat()
+                val h = displayMetrics.heightPixels.toFloat()
+                val bounds = TableBounds(
+                    xMin = w * 0.1270f,
+                    yMin = h * 0.2922f,
+                    xMax = w * 0.8721f,
+                    yMax = h * 0.8703f
+                )
+                TableBoundsCalibration.saveTableBounds(this@CalibrationActivity, bounds)
+                statusText.text = "Status: Calibrated [${bounds.xMin.toInt()}, ${bounds.yMin.toInt()} -> ${bounds.xMax.toInt()}, ${bounds.yMax.toInt()}]"
+                Toast.makeText(this@CalibrationActivity, "Table Bounds Saved!", Toast.LENGTH_SHORT).show()
             }
         }
-        layout.addView(recalibrateBtn)
+        layout.addView(calibrateBtn)
+
+        val clearBtn = Button(this).apply {
+            text = "Clear Calibration (Reset to Uncalibrated)"
+            setOnClickListener {
+                TableBoundsCalibration.clearTableBounds(this@CalibrationActivity)
+                statusText.text = "Status: NOT CALIBRATED (Overlay will skip until calibrated)"
+                Toast.makeText(this@CalibrationActivity, "Calibration Cleared!", Toast.LENGTH_SHORT).show()
+            }
+        }
+        layout.addView(clearBtn)
+
+        val prefs = getSharedPreferences("pool_cv_prefs", Context.MODE_PRIVATE)
 
         val toggleDebugBtn = Button(this).apply {
-            text = "Toggle CV Debug Overlay (Contours/Scores)"
+            text = "Toggle CV Debug Overlay (Dual Directions / Rays)"
             setOnClickListener {
                 val current = prefs.getBoolean("debug_cv_mode", false)
                 prefs.edit().putBoolean("debug_cv_mode", !current).apply()

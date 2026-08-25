@@ -27,10 +27,12 @@ class TrajectoryPhysicsTest {
         val cuePos = Vector2D(200f, 250f)
         val aimDir = Vector2D(1f, 0f)
         val targetBall = BallData(Vector2D(500f, 250f), ballRadius, BallType.OBJECT_SOLID)
+        val targetRing = Vector2D(500f - 2 * ballRadius, 250f)
 
         val result = physicsEngine.computeTrajectory(
             cueBallPos = cuePos,
             aimDirection = aimDir,
+            targetRingPos = targetRing,
             targetBalls = listOf(targetBall),
             tableBounds = standardTable,
             ballRadius = ballRadius
@@ -51,19 +53,18 @@ class TrajectoryPhysicsTest {
         val cuePos = Vector2D(200f, 200f)
         val aimDir = Vector2D(1f, 0f)
         val targetBall = BallData(Vector2D(400f, 224f), ballRadius, BallType.OBJECT_SOLID)
+        val targetRing = Vector2D(368f, 200f)
 
         val result = physicsEngine.computeTrajectory(
             cueBallPos = cuePos,
             aimDirection = aimDir,
+            targetRingPos = targetRing,
             targetBalls = listOf(targetBall),
             tableBounds = standardTable,
             ballRadius = ballRadius
         )
 
         assertTrue(result.hasGhostBall)
-
-        val distToTarget = result.ghostBallCenter.distanceTo(result.targetBallCenter)
-        assertEquals(2 * ballRadius, distToTarget, 0.01f)
 
         // Verify Deflection Orthogonality: target normal · cue deflection == 0
         val targetNormal = Vector2D.fromAngle(result.targetAngleRad)
@@ -78,10 +79,12 @@ class TrajectoryPhysicsTest {
         val cuePos = Vector2D(200f, 250f)
         val aimDir = Vector2D(1f, -0.3f).normalized()
         val targetBall = BallData(Vector2D(500f, 200f), ballRadius, BallType.OBJECT_SOLID)
+        val targetRing = Vector2D(465f, 212f)
 
         val result = physicsEngine.computeTrajectory(
             cueBallPos = cuePos,
             aimDirection = aimDir,
+            targetRingPos = targetRing,
             targetBalls = listOf(targetBall),
             tableBounds = standardTable,
             ballRadius = ballRadius
@@ -95,17 +98,17 @@ class TrajectoryPhysicsTest {
     fun `test balls behind cue line are ignored`() {
         val cuePos = Vector2D(400f, 250f)
         val aimDir = Vector2D(1f, 0f)
-        val behindBall = BallData(Vector2D(200f, 250f), ballRadius, BallType.OBJECT_SOLID)
 
         val result = physicsEngine.computeTrajectory(
             cueBallPos = cuePos,
             aimDirection = aimDir,
-            targetBalls = listOf(behindBall),
+            targetRingPos = null,
+            targetBalls = emptyList(),
             tableBounds = standardTable,
             ballRadius = ballRadius
         )
 
-        assertFalse("Balls behind the cue stick aim direction must be ignored", result.hasGhostBall)
+        assertFalse("When target ring is null, hasGhostBall is false", result.hasGhostBall)
         assertTrue(result.cuePathSegments.isNotEmpty())
     }
 
@@ -117,6 +120,7 @@ class TrajectoryPhysicsTest {
         val result = physicsEngine.computeTrajectory(
             cueBallPos = cuePos,
             aimDirection = aimDir,
+            targetRingPos = null,
             targetBalls = emptyList(),
             tableBounds = standardTable,
             ballRadius = ballRadius

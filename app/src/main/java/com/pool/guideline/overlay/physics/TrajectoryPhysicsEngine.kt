@@ -19,6 +19,26 @@ class TrajectoryPhysicsEngine(
         val distance: Float = Float.MAX_VALUE
     )
 
+    /**
+     * Validates that the RESOLVED TARGET ENDPOINT (ghost-ball contact point / object ball position)
+     * resides strictly inside the playable table bounds.
+     *
+     * IMPORTANT NOTE: This explicitly validates the resolved target point, NOT the cue ball position.
+     * Catches instances where direction was inverted or target landed outside table.
+     */
+    fun isValidTarget(
+        target: Vector2D,
+        tableBounds: TableBounds,
+        ballRadius: Float = tableBounds.estimatedBallRadius
+    ): Boolean {
+        if (!tableBounds.isValid) return false
+        val left = tableBounds.xMin + ballRadius * 0.5f
+        val right = tableBounds.xMax - ballRadius * 0.5f
+        val top = tableBounds.yMin + ballRadius * 0.5f
+        val bottom = tableBounds.yMax - ballRadius * 0.5f
+        return target.x in left..right && target.y in top..bottom
+    }
+
     fun computeTrajectory(
         cueBallPos: Vector2D,
         aimDirection: Vector2D,
@@ -27,22 +47,39 @@ class TrajectoryPhysicsEngine(
         tableBounds: TableBounds,
         ballRadius: Float = tableBounds.estimatedBallRadius
     ): TrajectoryResult {
+        if (!tableBounds.isValid) return TrajectoryResult.EMPTY
+
         val dir = aimDirection.normalized()
         if (dir.lengthSq() < 1e-4f) return TrajectoryResult.EMPTY
 
-        val ghostPos = targetRingPos ?: (cueBallPos + dir * 250f)
+        val ghostPos = targetRingPos
         val hasGhostBall = targetRingPos != null
 
+        // Validate the target endpoint explicitly when ghost ball is present
+        if (hasGhostBall && !isValidTarget(ghostPos!!, tableBounds, ballRadius)) {
+            return TrajectoryResult.EMPTY
+        }
+
         val cuePreImpactSegments = ArrayList<TrajectorySegment>()
-        cuePreImpactSegments.add(TrajectorySegment(cueBallPos, ghostPos, isCushionBounce = false))
+        if (hasGhostBall) {
+            cuePreImpactSegments.add(TrajectorySegment(cueBallPos, ghostPos!!, isCushionBounce = false))
+        } else {
+            // Free aim: raycast cue ball directly to cushion
+            val railHit = findRailIntersection(cueBallPos, dir, tableBounds, ballRadius)
+            if (railHit.hit) {
+                cuePreImpactSegments.add(TrajectorySegment(cueBallPos, railHit.point, isCushionBounce = false))
+            } else {
+                cuePreImpactSegments.add(TrajectorySegment(cueBallPos, cueBallPos + dir * 350f, isCushionBounce = false))
+            }
+        }
 
         // Step 1: Resolve Object Ball Impact Direction
         var targetNormal = dir
-        var hitTargetBallPos = ghostPos + (dir * (ballRadius * 1.5f))
+        var hitTargetBallPos = if (hasGhostBall) ghostPos!! + (dir * (ballRadius * 1.5f)) else Vector2D.ZERO
 
         if (hasGhostBall && targetBalls.isNotEmpty()) {
             for (b in targetBalls) {
-                val dSq = ghostPos.distanceSqTo(b.center)
+                val dSq = ghostPos!!.distanceSqTo(b.center)
                 if (dSq > 4.0f && dSq < (ballRadius * 3.0f) * (ballRadius * 3.0f)) {
                     hitTargetBallPos = b.center
                     val diff = (b.center - ghostPos).normalized()
@@ -102,7 +139,7 @@ class TrajectoryPhysicsEngine(
         // Step 4: Trace Cue Ball Tangent Deflection (only on cut shots)
         val cuePostImpactSegments = ArrayList<TrajectorySegment>()
         if (hasGhostBall && tangent.lengthSq() > 0.1f) {
-            var cueDefOrigin = ghostPos
+            var cueDefOrigin = ghostPos!!
             var cueDefDir = tangent
 
             for (bounce in 0..2) {
@@ -122,7 +159,7 @@ class TrajectoryPhysicsEngine(
         return TrajectoryResult(
             cuePathSegments = cuePreImpactSegments,
             hasGhostBall = hasGhostBall,
-            ghostBallCenter = ghostPos,
+            ghostBallCenter = ghostPos ?: Vector2D.ZERO,
             targetBallCenter = hitTargetBallPos,
             targetBallSegments = targetBallSegments,
             cuePostImpactSegments = cuePostImpactSegments,

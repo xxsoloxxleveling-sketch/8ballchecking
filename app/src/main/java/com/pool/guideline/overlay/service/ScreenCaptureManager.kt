@@ -23,8 +23,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Manages screen capturing via MediaProjection & ImageReader at downsampled resolution (50% scale),
- * executing real-time CV ball detection and trajectory physics in a dedicated coroutine.
+ * 60 FPS screen capture pipeline for real-time pool trajectory prediction.
  */
 class ScreenCaptureManager(
     private val context: Context,
@@ -33,9 +32,9 @@ class ScreenCaptureManager(
 ) {
     private val tag = "ScreenCaptureMgr"
 
-    private val downsampleFactor = 0.5f
-    private var processWidth = 960
-    private var processHeight = 540
+    // High performance 60fps working resolution (~640x360)
+    private var processWidth = 640
+    private var processHeight = 360
 
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -55,19 +54,19 @@ class ScreenCaptureManager(
         val sHeight = if (screenHeight > 0) screenHeight else 1080
         val density = if (densityDpi > 0) densityDpi else 320
 
-        processWidth = ((sWidth * downsampleFactor).toInt() / 16) * 16
-        processHeight = ((sHeight * downsampleFactor).toInt() / 16) * 16
+        // Scale to 640-pixel width for ultra fast 60fps computer vision processing
+        val scale = 640f / sWidth.toFloat()
+        processWidth = 640
+        processHeight = ((sHeight * scale).toInt() / 16) * 16
 
         overlayView.coordScaleX = sWidth.toFloat() / processWidth.toFloat()
         overlayView.coordScaleY = sHeight.toFloat() / processHeight.toFloat()
-        overlayView.showDebugBounds = true
 
-        Log.i(tag, "Starting ScreenCapture: Screen=${sWidth}x${sHeight}, Process=${processWidth}x${processHeight}")
+        Log.i(tag, "ScreenCapture Init: Screen=${sWidth}x${sHeight}, CV=${processWidth}x${processHeight}")
 
-        // Android 14+ MANDATE: Register MediaProjection callback before createVirtualDisplay
         mediaProjection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                Log.i(tag, "MediaProjection session stopped")
+                Log.i(tag, "MediaProjection stopped")
                 stopCapture()
             }
         }, Handler(Looper.getMainLooper()))
@@ -79,7 +78,7 @@ class ScreenCaptureManager(
             2
         )
 
-        handlerThread = HandlerThread("ImageReaderWorkerThread").apply { start() }
+        handlerThread = HandlerThread("PoolImageReaderThread").apply { start() }
         val workerHandler = Handler(handlerThread!!.looper)
 
         virtualDisplay = mediaProjection.createVirtualDisplay(
@@ -104,7 +103,7 @@ class ScreenCaptureManager(
                     try {
                         processImageFrame(image)
                     } catch (t: Throwable) {
-                        Log.e(tag, "Frame processing error: ${t.message}")
+                        Log.e(tag, "CV processing error: ${t.message}")
                     } finally {
                         image.close()
                         processingFrame.set(false)
@@ -130,7 +129,8 @@ class ScreenCaptureManager(
             pixelStride = pixelStride
         )
 
-        if (detection.tableBounds.isValid && detection.cueBall != null) {
+        // Only draw trajectory WHEN the player is actively aiming!
+        if (detection.tableBounds.isValid && detection.cueBall != null && detection.hasValidAim) {
             val trajectory = physicsEngine.computeTrajectory(
                 cueBallPos = detection.cueBall.center,
                 aimDirection = detection.aimDirection,
@@ -140,6 +140,7 @@ class ScreenCaptureManager(
             )
             overlayView.updateTrajectory(trajectory, detection.tableBounds)
         } else {
+            // Clean canvas when not aiming or during ball in hand
             overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds)
         }
     }
@@ -163,7 +164,7 @@ class ScreenCaptureManager(
             handlerThread = null
             mediaProjection.stop()
         } catch (e: Exception) {
-            Log.e(tag, "Error during capture teardown: ${e.message}")
+            Log.e(tag, "Teardown error: ${e.message}")
         }
     }
 }

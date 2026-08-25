@@ -11,7 +11,7 @@ import kotlin.math.sin
 
 enum class TableFeltPreset {
     AUTO,
-    CYAN_TOURNAMENT,   // Miniclip 8-Ball Pool default cyan/blue felt
+    CYAN_TOURNAMENT,
     CLASSIC_GREEN,
     ROYAL_BLUE,
     MIDNIGHT_RED
@@ -28,8 +28,8 @@ data class DetectionResult(
 )
 
 /**
- * High-performance, zero-allocation computer vision engine for table and ball detection.
- * Calibrated specifically for mobile 8-Ball Pool games.
+ * High-performance, zero-allocation computer vision engine for 8-ball pool.
+ * Specifically tuned for full-screen table bounds and precise aiming line detection.
  */
 class TableAndBallDetector(
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
@@ -38,11 +38,7 @@ class TableAndBallDetector(
     private var pixelBuffer: IntArray = IntArray(0)
     private var cachedTableBounds = TableBounds.EMPTY
     private var tableDetectInterval = 0
-    private var lastValidAimDirection = Vector2D(1.0f, 0.0f)
 
-    /**
-     * Processes a direct RGBA_8888 ByteBuffer from ImageReader with zero intermediate byte array allocations.
-     */
     fun processFrame(
         buffer: ByteBuffer,
         width: Int,
@@ -77,42 +73,29 @@ class TableAndBallDetector(
         return processIntPixels(pixelBuffer, width, height)
     }
 
-    fun processBitmap(bitmap: Bitmap): DetectionResult {
-        val width = bitmap.width
-        val height = bitmap.height
-        val totalPixels = width * height
-        if (pixelBuffer.size != totalPixels) {
-            pixelBuffer = IntArray(totalPixels)
-        }
-
-        bitmap.getPixels(pixelBuffer, 0, width, 0, 0, width, height)
-        return processIntPixels(pixelBuffer, width, height)
-    }
-
     private fun processIntPixels(pixels: IntArray, width: Int, height: Int): DetectionResult {
-        // Step 1: Detect Table Bounds
-        if (!cachedTableBounds.isValid || (++tableDetectInterval % 20 == 0)) {
+        // Step 1: Detect / Refresh Table Bounds
+        if (!cachedTableBounds.isValid || (++tableDetectInterval % 30 == 0)) {
             cachedTableBounds = detectTableBounds(pixels, width, height)
         }
 
         val table = cachedTableBounds
         val ballRadius = table.estimatedBallRadius
 
-        // Step 2: Detect Cue Ball (white sphere)
+        // Step 2: Detect Cue Ball
         val cueBall = detectCueBall(pixels, width, height, table, ballRadius)
 
         // Step 3: Detect Object Balls
         val targetBalls = detectObjectBalls(pixels, width, height, table, cueBall, ballRadius)
 
-        // Step 4: Detect Aim Vector
-        var aimVector = lastValidAimDirection
+        // Step 4: Detect Active Aiming Vector
+        var aimVector = Vector2D.ZERO
         var hasValidAim = false
 
         if (cueBall != null) {
-            val aim = detectAimDirection(pixels, width, height, cueBall.center, ballRadius, table, targetBalls)
-            if (aim.lengthSq() > 0.1f) {
-                aimVector = aim.normalized()
-                lastValidAimDirection = aimVector
+            val (aim, valid) = detectActiveAim(pixels, width, height, cueBall.center, ballRadius)
+            if (valid) {
+                aimVector = aim
                 hasValidAim = true
             }
         }
@@ -128,6 +111,9 @@ class TableAndBallDetector(
         )
     }
 
+    /**
+     * Accurately determines the full rectangular table boundaries.
+     */
     private fun detectTableBounds(pixels: IntArray, width: Int, height: Int): TableBounds {
         var minX = width
         var maxX = 0
@@ -150,12 +136,13 @@ class TableAndBallDetector(
             }
         }
 
-        val boundingW = maxX - minX
-        val boundingH = maxY - minY
+        val detectedWidth = maxX - minX
+        val detectedHeight = maxY - minY
 
-        if (feltPixelCount > (width * height / 40) && boundingW > width * 0.35f && boundingH > height * 0.25f) {
-            val paddingX = (boundingW * 0.015f)
-            val paddingY = (boundingH * 0.015f)
+        // Pool tables have a standard 2:1 aspect ratio across ~74% of the screen width
+        if (detectedWidth > width * 0.65f && detectedHeight > height * 0.45f) {
+            val paddingX = detectedWidth * 0.015f
+            val paddingY = detectedHeight * 0.015f
             return TableBounds(
                 xMin = minX.toFloat() + paddingX,
                 yMin = minY.toFloat() + paddingY,
@@ -164,17 +151,18 @@ class TableAndBallDetector(
             )
         }
 
-        // Standard 8-ball pool centered table cloth layout
-        val defaultMarginX = width * 0.11f
-        val defaultMarginY = height * 0.21f
+        // Exact calibrated 8-Ball Pool felt boundaries on widescreen landscape mobile displays
         return TableBounds(
-            xMin = defaultMarginX,
-            yMin = defaultMarginY,
-            xMax = width - defaultMarginX,
-            yMax = height - defaultMarginY
+            xMin = width * 0.125f,
+            yMin = height * 0.235f,
+            xMax = width * 0.875f,
+            yMax = height * 0.865f
         )
     }
 
+    /**
+     * Detects the white cue ball.
+     */
     private fun detectCueBall(
         pixels: IntArray,
         width: Int,
@@ -200,8 +188,8 @@ class TableAndBallDetector(
                 val g = (color shr 8) and 0xFF
                 val b = color and 0xFF
 
-                // White cue ball pixels
-                if (r > 195 && g > 195 && b > 195 && abs(r - g) < 30 && abs(g - b) < 30) {
+                // White cue ball pixels (high brightness across RGB)
+                if (r > 190 && g > 190 && b > 190 && abs(r - g) < 35 && abs(g - b) < 35) {
                     sumX += x
                     sumY += y
                     whiteCount++
@@ -210,7 +198,7 @@ class TableAndBallDetector(
         }
 
         val expectedPixels = (Math.PI * ballRadius * ballRadius) / (step * step)
-        if (whiteCount >= expectedPixels * 0.15f) {
+        if (whiteCount >= expectedPixels * 0.12f) {
             val centerX = sumX / whiteCount
             val centerY = sumY / whiteCount
             return BallData(
@@ -224,6 +212,9 @@ class TableAndBallDetector(
         return null
     }
 
+    /**
+     * Detects object balls on the table.
+     */
     private fun detectObjectBalls(
         pixels: IntArray,
         width: Int,
@@ -238,9 +229,9 @@ class TableAndBallDetector(
         val startY = max(0, table.yMin.toInt() + ballRadius.toInt())
         val endY = min(height - 1, table.yMax.toInt() - ballRadius.toInt())
 
-        val gridStep = (ballRadius * 1.1f).toInt().coerceAtLeast(4)
+        val gridStep = (ballRadius * 1.0f).toInt().coerceAtLeast(3)
         val cueCenter = cueBall?.center
-        val minCueDistSq = (ballRadius * 2.1f) * (ballRadius * 2.1f)
+        val minCueDistSq = (ballRadius * 2.0f) * (ballRadius * 2.0f)
 
         for (y in startY until endY step gridStep) {
             val rowOffset = y * width
@@ -270,20 +261,22 @@ class TableAndBallDetector(
         return balls
     }
 
-    private fun detectAimDirection(
+    /**
+     * Detects the active cue stick aiming line.
+     * Only returns valid=true when the player is actively aiming!
+     */
+    private fun detectActiveAim(
         pixels: IntArray,
         width: Int,
         height: Int,
         cueCenter: Vector2D,
-        ballRadius: Float,
-        table: TableBounds,
-        targetBalls: List<BallData>
-    ): Vector2D {
-        val sampleRadius1 = ballRadius * 2.0f
-        val sampleRadius2 = ballRadius * 3.5f
+        ballRadius: Float
+    ): Pair<Vector2D, Boolean> {
+        val sampleRadius1 = ballRadius * 1.8f
+        val sampleRadius2 = ballRadius * 3.2f
         val numSamples = 90
-        var bestContrast = 0.0f
-        var bestAngle = 0.0f
+        var maxAimScore = 0.0f
+        var bestAimAngle = 0.0f
 
         for (i in 0 until numSamples) {
             val angle = (2.0 * Math.PI * i / numSamples).toFloat()
@@ -301,51 +294,40 @@ class TableAndBallDetector(
                 val c1 = pixels[y1 * width + x1]
                 val c2 = pixels[y2 * width + x2]
 
-                // Bright aim guideline detected
+                // 1. Direct White Aim Guideline Check
                 if (isWhitePixel(c1) && isWhitePixel(c2)) {
-                    return Vector2D(cosA, sinA)
+                    return Pair(Vector2D(cosA, sinA), true)
                 }
 
+                // 2. Cue Stick / High Contrast Line Check
                 val b1 = getPixelBrightness(c1)
                 val b2 = getPixelBrightness(c2)
-                val avgBrightness = (b1 + b2) / 2.0f
+                val avgB = (b1 + b2) / 2.0f
 
-                if (avgBrightness > 185f || avgBrightness < 45f) {
-                    val contrast = abs(avgBrightness - 110f)
-                    if (contrast > bestContrast) {
-                        bestContrast = contrast
-                        bestAngle = angle
+                // Stick contrast against felt
+                if (avgB > 185f || avgB < 40f) {
+                    val score = abs(avgB - 110f)
+                    if (score > maxAimScore) {
+                        maxAimScore = score
+                        bestAimAngle = angle
                     }
                 }
             }
         }
 
-        if (bestContrast > 40f) {
-            return Vector2D(cos(bestAngle), sin(bestAngle))
+        // Strict threshold: Only activate when stick / aim line is clearly detected
+        if (maxAimScore > 55f) {
+            return Pair(Vector2D(cos(bestAimAngle), sin(bestAimAngle)), true)
         }
 
-        // Fallback: If balls exist, point towards closest ball
-        if (targetBalls.isNotEmpty()) {
-            var closestBall = targetBalls[0]
-            var minDistSq = cueCenter.distanceSqTo(closestBall.center)
-            for (b in targetBalls) {
-                val d = cueCenter.distanceSqTo(b.center)
-                if (d < minDistSq) {
-                    minDistSq = d
-                    closestBall = b
-                }
-            }
-            return (closestBall.center - cueCenter).normalized()
-        }
-
-        return lastValidAimDirection
+        return Pair(Vector2D.ZERO, false)
     }
 
     private fun isWhitePixel(color: Int): Boolean {
         val r = (color shr 16) and 0xFF
         val g = (color shr 8) and 0xFF
         val b = color and 0xFF
-        return r > 200 && g > 200 && b > 200
+        return r > 205 && g > 205 && b > 205
     }
 
     private fun getPixelBrightness(color: Int): Float {
@@ -362,21 +344,22 @@ class TableAndBallDetector(
 
         return when (feltPreset) {
             TableFeltPreset.CYAN_TOURNAMENT -> {
-                b > 100 && g > 85 && b > (r * 1.3f) && g > (r * 1.1f)
+                b > 85 && g > 75 && b > (r * 1.15f) && g > (r * 1.05f)
             }
             TableFeltPreset.CLASSIC_GREEN -> {
-                g > 65 && g > (r * 1.3f) && g > (b * 1.1f)
+                g > 60 && g > (r * 1.2f) && g > (b * 1.05f)
             }
             TableFeltPreset.ROYAL_BLUE -> {
-                b > 80 && b > (r * 1.3f) && b > (g * 0.9f)
+                b > 75 && b > (r * 1.2f) && b > (g * 0.85f)
             }
             TableFeltPreset.MIDNIGHT_RED -> {
-                r > 90 && r > (g * 1.4f) && r > (b * 1.4f)
+                r > 80 && r > (g * 1.3f) && r > (b * 1.3f)
             }
             TableFeltPreset.AUTO -> {
-                (b > 95 && g > 80 && b > (r * 1.25f) && g > (r * 1.1f)) ||
-                (g > 65 && g > (r * 1.2f) && g > (b * 1.05f)) ||
-                (b > 80 && b > (r * 1.25f) && b > (g * 0.85f))
+                // Generous multi-hue felt classifier
+                (b > 80 && g > 70 && b > (r * 1.12f) && g > (r * 1.02f)) ||
+                (g > 60 && g > (r * 1.15f) && g > (b * 1.02f)) ||
+                (b > 75 && b > (r * 1.15f) && b > (g * 0.85f))
             }
         }
     }

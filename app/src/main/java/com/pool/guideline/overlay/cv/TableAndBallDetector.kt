@@ -19,6 +19,7 @@ enum class TableFeltPreset {
 data class DetectionResult(
     val tableBounds: TableBounds = TableBounds.EMPTY,
     val cueBall: BallData? = null,
+    val targetRingPos: Vector2D? = null,
     val targetBalls: List<BallData> = emptyList(),
     val aimDirection: Vector2D = Vector2D.ZERO,
     val hasValidAim: Boolean = false,
@@ -81,7 +82,7 @@ class TableAndBallDetector(
         val table = cachedTableBounds
         val ballRadius = table.estimatedBallRadius
 
-        // Step 2: Find the in-game Target Crosshair Ring (placed directly on the aimed ball)
+        // Step 2: Find the in-game Target Crosshair Ring
         val targetRing = findTargetRing(pixels, width, height, table, ballRadius)
 
         var cueBall: BallData? = null
@@ -104,6 +105,7 @@ class TableAndBallDetector(
         return DetectionResult(
             tableBounds = table,
             cueBall = cueBall,
+            targetRingPos = targetRing,
             targetBalls = targetBalls,
             aimDirection = aimDirection,
             hasValidAim = hasValidAim,
@@ -177,7 +179,7 @@ class TableAndBallDetector(
         var bestRing: Vector2D? = null
         var maxRingScore = 0
 
-        val step = 3
+        val step = 2
         val sampleAngles = 18
         val ringRadius = ballRadius * 1.0f
 
@@ -190,7 +192,7 @@ class TableAndBallDetector(
                 val cb = centerColor and 0xFF
 
                 // Ring center is an object ball (non-white center)
-                if (cr > 225 && cg > 225 && cb > 225) continue
+                if (cr > 230 && cg > 230 && cb > 230) continue
 
                 var whitePerimeter = 0
                 for (i in 0 until sampleAngles) {
@@ -202,13 +204,13 @@ class TableAndBallDetector(
                         val r = (color shr 16) and 0xFF
                         val g = (color shr 8) and 0xFF
                         val b = color and 0xFF
-                        if (r > 190 && g > 190 && b > 190 && abs(r - g) < 30 && abs(g - b) < 30) {
+                        if (r > 185 && g > 185 && b > 185 && abs(r - g) < 35 && abs(g - b) < 35) {
                             whitePerimeter++
                         }
                     }
                 }
 
-                if (whitePerimeter >= 9 && whitePerimeter > maxRingScore) {
+                if (whitePerimeter >= 7 && whitePerimeter > maxRingScore) {
                     maxRingScore = whitePerimeter
                     bestRing = Vector2D(x.toFloat(), y.toFloat())
                 }
@@ -254,11 +256,11 @@ class TableAndBallDetector(
                     val r = (color shr 16) and 0xFF
                     val g = (color shr 8) and 0xFF
                     val b = color and 0xFF
-                    if (r > 185 && g > 185 && b > 185) {
+                    if (r > 180 && g > 180 && b > 180) {
                         whiteCount++
                     }
                 }
-                d += 6.0f
+                d += 5.0f
             }
 
             if (whiteCount > maxWhiteness) {
@@ -267,12 +269,10 @@ class TableAndBallDetector(
             }
         }
 
-        if (maxWhiteness < 5) {
+        if (maxWhiteness < 4) {
             return AimResult(Vector2D.ZERO, Vector2D.ZERO, false)
         }
 
-        // Ray from targetRing along bestAngle points towards Cue Ball.
-        // Trace along bestAngle to find where the solid white Cue Ball is located
         val cosBest = cos(bestAngle)
         val sinBest = sin(bestAngle)
         var cueCenter: Vector2D? = null
@@ -287,15 +287,14 @@ class TableAndBallDetector(
                 val g = (color shr 8) and 0xFF
                 val b = color and 0xFF
 
-                // Check for solid white ball disc
-                if (r > 210 && g > 210 && b > 210) {
+                if (r > 200 && g > 200 && b > 200) {
                     var discWhite = true
-                    for (off in intArrayOf(-4, 4)) {
+                    for (off in intArrayOf(-3, 3)) {
                         val c1 = if (cx + off in 0 until width) pixels[cy * width + (cx + off)] else 0
                         val c2 = if (cy + off in 0 until height) pixels[(cy + off) * width + cx] else 0
                         val r1 = (c1 shr 16) and 0xFF
                         val r2 = (c2 shr 16) and 0xFF
-                        if (r1 < 180 || r2 < 180) {
+                        if (r1 < 175 || r2 < 175) {
                             discWhite = false
                             break
                         }
@@ -306,11 +305,10 @@ class TableAndBallDetector(
                     }
                 }
             }
-            d += 4.0f
+            d += 3.0f
         }
 
         val cuePos = cueCenter ?: Vector2D(targetRing.x + cosBest * ballRadius * 8f, targetRing.y + sinBest * ballRadius * 8f)
-        // Shot vector travels FROM Cue Ball TO Target Ring:
         val shotVector = (targetRing - cuePos).normalized()
 
         return AimResult(cuePos, shotVector, true)
@@ -369,7 +367,7 @@ class TableAndBallDetector(
 
         return when (feltPreset) {
             TableFeltPreset.CYAN_TOURNAMENT -> {
-                b > 100 && g > 80 && b > (r * 1.18f) && g > (r * 1.05f)
+                b > 90 && g > 75 && b > (r * 1.15f) && g > (r * 1.05f)
             }
             TableFeltPreset.CLASSIC_GREEN -> {
                 g > 60 && g > (r * 1.2f) && g > (b * 1.05f)
@@ -381,7 +379,7 @@ class TableAndBallDetector(
                 r > 80 && r > (g * 1.3f) && r > (b * 1.3f)
             }
             TableFeltPreset.AUTO -> {
-                (b > 95 && g > 80 && b > (r * 1.15f) && g > (r * 1.05f)) ||
+                (b > 90 && g > 75 && b > (r * 1.12f) && g > (r * 1.02f)) ||
                 (g > 60 && g > (r * 1.15f) && g > (b * 1.02f)) ||
                 (b > 75 && b > (r * 1.15f) && b > (g * 0.85f))
             }

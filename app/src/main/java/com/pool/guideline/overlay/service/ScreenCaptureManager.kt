@@ -134,6 +134,7 @@ class ScreenCaptureManager(
             val trajectory = physicsEngine.computeTrajectory(
                 cueBallPos = detection.cueBall.center,
                 aimDirection = detection.aimDirection,
+                targetRingPos = detection.targetRingPos,
                 targetBalls = detection.targetBalls,
                 tableBounds = detection.tableBounds,
                 ballRadius = detection.tableBounds.estimatedBallRadius

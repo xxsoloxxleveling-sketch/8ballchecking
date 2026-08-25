@@ -2,16 +2,10 @@ package com.pool.guideline.overlay.physics
 
 import com.pool.guideline.overlay.cv.BallData
 import com.pool.guideline.overlay.cv.TableBounds
-import kotlin.math.max
-import kotlin.math.sqrt
 
 /**
- * Advanced 8-ball pool physics and raycasting engine.
- * Computes:
- * - Direct cue ball to ghost ball path
- * - Multi-bounce target ball bank shots into pockets
- * - 90-degree cue ball post-impact tangent deflection
- * - Pocket target highlighting
+ * 8-Ball pool trajectory physics engine.
+ * Computes direct ghost ball targeting, multi-cushion bank reflections, and 90-degree tangent deflection.
  */
 class TrajectoryPhysicsEngine(
     var maxBounces: Int = 4
@@ -27,6 +21,7 @@ class TrajectoryPhysicsEngine(
     fun computeTrajectory(
         cueBallPos: Vector2D,
         aimDirection: Vector2D,
+        targetRingPos: Vector2D?,
         targetBalls: List<BallData>,
         tableBounds: TableBounds,
         ballRadius: Float = tableBounds.estimatedBallRadius
@@ -34,86 +29,32 @@ class TrajectoryPhysicsEngine(
         val dir = aimDirection.normalized()
         if (dir.lengthSq() < 1e-4f) return TrajectoryResult.EMPTY
 
-        return computeFullTrajectoryWithBanks(cueBallPos, dir, targetBalls, tableBounds, ballRadius)
-    }
+        // If target ring is directly identified, snap ghost ball directly to target ring
+        val ghostPos = targetRingPos ?: (cueBallPos + dir * 250f)
+        val hasGhostBall = targetRingPos != null
 
-    private fun computeFullTrajectoryWithBanks(
-        cueBallPos: Vector2D,
-        aimDirection: Vector2D,
-        targetBalls: List<BallData>,
-        tableBounds: TableBounds,
-        ballRadius: Float
-    ): TrajectoryResult {
-        val cuePreImpactSegments = ArrayList<TrajectorySegment>(maxBounces + 1)
-        var currentOrigin = cueBallPos
-        var currentDir = aimDirection
-        val combinedRadius = ballRadius * 2.0f
-        val combinedRadiusSq = combinedRadius * combinedRadius
+        val cuePreImpactSegments = ArrayList<TrajectorySegment>()
+        cuePreImpactSegments.add(TrajectorySegment(cueBallPos, ghostPos, isCushionBounce = false))
 
-        var hasGhostBall = false
-        var ghostBallPos = Vector2D.ZERO
-        var hitTargetBallPos = Vector2D.ZERO
-        var targetNormal = Vector2D.ZERO
-        var cueDeflection = Vector2D.ZERO
-
-        // Step 1: Trace Cue Ball path to the first object ball (or max cushion bounces)
-        for (bounce in 0..maxBounces) {
-            var closestBallDist = Float.MAX_VALUE
-            var candidateGhostPos = Vector2D.ZERO
-            var candidateTargetBall = Vector2D.ZERO
-            var ballFound = false
-
-            for (i in targetBalls.indices) {
-                val ball = targetBalls[i]
-                val v = ball.center - currentOrigin
-                val tProj = v.dot(currentDir)
-
-                if (tProj <= 0.0f) continue
-
-                val vLenSq = v.lengthSq()
-                val dSq = vLenSq - (tProj * tProj)
-
-                if (dSq > combinedRadiusSq) continue
-
-                val offset = sqrt(max(0.0f, combinedRadiusSq - dSq))
-                val tHit = tProj - offset
-
-                if (tHit > 1.0f && tHit < closestBallDist) {
-                    closestBallDist = tHit
-                    candidateGhostPos = currentOrigin + (currentDir * tHit)
-                    candidateTargetBall = ball.center
-                    ballFound = true
+        // Step 1: Locate the target object ball
+        var hitTargetBallPos = ghostPos + (dir * (ballRadius * 1.6f))
+        if (hasGhostBall && targetBalls.isNotEmpty()) {
+            var nearestDistSq = Float.MAX_VALUE
+            for (b in targetBalls) {
+                val dSq = ghostPos.distanceSqTo(b.center)
+                if (dSq < (ballRadius * 3.0f) * (ballRadius * 3.0f) && dSq < nearestDistSq) {
+                    nearestDistSq = dSq
+                    hitTargetBallPos = b.center
                 }
             }
-
-            val railHit = findRailIntersection(currentOrigin, currentDir, tableBounds, ballRadius)
-
-            if (ballFound && (!railHit.hit || closestBallDist < railHit.distance)) {
-                cuePreImpactSegments.add(TrajectorySegment(currentOrigin, candidateGhostPos, isCushionBounce = bounce > 0))
-                hasGhostBall = true
-                ghostBallPos = candidateGhostPos
-                hitTargetBallPos = candidateTargetBall
-
-                // Normal vector: Target ball trajectory direction
-                targetNormal = (hitTargetBallPos - ghostBallPos).normalized()
-
-                // Tangent vector: 90-degree cue deflection
-                val dot = currentDir.dot(targetNormal)
-                cueDeflection = (currentDir - (targetNormal * dot)).normalized()
-                break
-            }
-
-            if (railHit.hit && railHit.distance > 1.0f) {
-                cuePreImpactSegments.add(TrajectorySegment(currentOrigin, railHit.point, isCushionBounce = true))
-                val reflDir = currentDir.reflect(railHit.normal).normalized()
-                currentOrigin = railHit.point
-                currentDir = reflDir
-            } else {
-                val endPoint = currentOrigin + (currentDir * 500.0f)
-                cuePreImpactSegments.add(TrajectorySegment(currentOrigin, endPoint, isCushionBounce = false))
-                break
-            }
         }
+
+        // Normal: Target ball direction
+        val targetNormal = (hitTargetBallPos - ghostPos).normalized()
+
+        // Tangent: 90-degree cue deflection
+        val dot = dir.dot(targetNormal)
+        val cueDeflection = (dir - (targetNormal * dot)).normalized()
 
         // Step 2: Trace Object Ball Multi-Cushion Bank Path (Zigzag into pockets)
         val targetBallSegments = ArrayList<TrajectorySegment>()
@@ -128,7 +69,7 @@ class TrajectoryPhysicsEngine(
             for (bounce in 0..maxBounces) {
                 val railHit = findRailIntersection(objOrigin, objDir, tableBounds, ballRadius)
 
-                // Check pocket alignment along this segment
+                // Check pocket alignment
                 for (p in pockets) {
                     val score = p.computeAlignmentScore(objOrigin, objDir)
                     if (score > bestPocketScore) {
@@ -152,7 +93,7 @@ class TrajectoryPhysicsEngine(
         // Step 3: Trace Cue Ball Post-Impact Multi-Cushion Deflection
         val cuePostImpactSegments = ArrayList<TrajectorySegment>()
         if (hasGhostBall && cueDeflection.lengthSq() > 0.1f) {
-            var cueDefOrigin = ghostBallPos
+            var cueDefOrigin = ghostPos
             var cueDefDir = cueDeflection
 
             for (bounce in 0..2) {
@@ -172,7 +113,7 @@ class TrajectoryPhysicsEngine(
         return TrajectoryResult(
             cuePathSegments = cuePreImpactSegments,
             hasGhostBall = hasGhostBall,
-            ghostBallCenter = ghostBallPos,
+            ghostBallCenter = ghostPos,
             targetBallCenter = hitTargetBallPos,
             targetBallSegments = targetBallSegments,
             cuePostImpactSegments = cuePostImpactSegments,

@@ -1,24 +1,20 @@
 package com.pool.guideline.overlay.physics
 
 import com.pool.guideline.overlay.cv.BallData
-import com.pool.guideline.overlay.cv.NativeCvBridge
 import com.pool.guideline.overlay.cv.TableBounds
-import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
  * Advanced 8-ball pool physics and raycasting engine.
- * Supports:
- * - Multi-bounce object ball bank shots (zigzagging across cushions into pockets)
- * - Cue ball post-impact multi-cushion deflection paths
- * - Chain collision / combo shot propagation (ball-to-ball)
- * - 90-degree tangent deflection rule
+ * Computes:
+ * - Direct cue ball to ghost ball path
+ * - Multi-bounce target ball bank shots into pockets
+ * - 90-degree cue ball post-impact tangent deflection
+ * - Pocket target highlighting
  */
 class TrajectoryPhysicsEngine(
-    var maxBounces: Int = 4,
-    var targetPathLength: Float = 1200.0f,
-    var deflectionPathLength: Float = 600.0f
+    var maxBounces: Int = 4
 ) {
 
     private data class RailIntersection(
@@ -57,16 +53,14 @@ class TrajectoryPhysicsEngine(
         var hasGhostBall = false
         var ghostBallPos = Vector2D.ZERO
         var hitTargetBallPos = Vector2D.ZERO
-        var hitTargetBallIndex = -1
         var targetNormal = Vector2D.ZERO
         var cueDeflection = Vector2D.ZERO
 
-        // Step 1: Trace Cue Ball path until it hits the first object ball (or max cushion bounces)
+        // Step 1: Trace Cue Ball path to the first object ball (or max cushion bounces)
         for (bounce in 0..maxBounces) {
             var closestBallDist = Float.MAX_VALUE
             var candidateGhostPos = Vector2D.ZERO
             var candidateTargetBall = Vector2D.ZERO
-            var candidateIndex = -1
             var ballFound = false
 
             for (i in targetBalls.indices) {
@@ -88,7 +82,6 @@ class TrajectoryPhysicsEngine(
                     closestBallDist = tHit
                     candidateGhostPos = currentOrigin + (currentDir * tHit)
                     candidateTargetBall = ball.center
-                    candidateIndex = i
                     ballFound = true
                 }
             }
@@ -100,7 +93,6 @@ class TrajectoryPhysicsEngine(
                 hasGhostBall = true
                 ghostBallPos = candidateGhostPos
                 hitTargetBallPos = candidateTargetBall
-                hitTargetBallIndex = candidateIndex
 
                 // Normal vector: Target ball trajectory direction
                 targetNormal = (hitTargetBallPos - ghostBallPos).normalized()
@@ -123,7 +115,7 @@ class TrajectoryPhysicsEngine(
             }
         }
 
-        // Step 2: Trace Object Ball Multi-Cushion Bank Path (Zigzag into pockets - Image 1)
+        // Step 2: Trace Object Ball Multi-Cushion Bank Path (Zigzag into pockets)
         val targetBallSegments = ArrayList<TrajectorySegment>()
         var bestPocket: Pocket? = null
         var bestPocketScore = 0f
@@ -157,7 +149,7 @@ class TrajectoryPhysicsEngine(
             }
         }
 
-        // Step 3: Trace Cue Ball Post-Impact Multi-Cushion Deflection (Image 2)
+        // Step 3: Trace Cue Ball Post-Impact Multi-Cushion Deflection
         val cuePostImpactSegments = ArrayList<TrajectorySegment>()
         if (hasGhostBall && cueDeflection.lengthSq() > 0.1f) {
             var cueDefOrigin = ghostBallPos
@@ -177,30 +169,6 @@ class TrajectoryPhysicsEngine(
             }
         }
 
-        // Step 4: Multi-Ball Break Shot / Propagation Simulation (Image 3)
-        val multiBallPaths = ArrayList<BallTrajectoryPath>()
-        if (hasGhostBall && targetBalls.size >= 3) {
-            for (i in targetBalls.indices) {
-                if (i == hitTargetBallIndex) continue
-                val ball = targetBalls[i]
-                val distToTarget = ball.center.distanceTo(hitTargetBallPos)
-                // If ball is close to target ball (cluster/rack), propagate impulse
-                if (distToTarget < combinedRadius * 1.8f) {
-                    val impulseDir = (ball.center - hitTargetBallPos).normalized()
-                    val pathSegs = ArrayList<TrajectorySegment>()
-                    val railHit = findRailIntersection(ball.center, impulseDir, tableBounds, ballRadius)
-                    if (railHit.hit) {
-                        pathSegs.add(TrajectorySegment(ball.center, railHit.point, isCushionBounce = false))
-                        val refl = impulseDir.reflect(railHit.normal).normalized()
-                        pathSegs.add(TrajectorySegment(railHit.point, railHit.point + (refl * 200f), isCushionBounce = true))
-                    } else {
-                        pathSegs.add(TrajectorySegment(ball.center, ball.center + (impulseDir * 300f), isCushionBounce = false))
-                    }
-                    multiBallPaths.add(BallTrajectoryPath(i, getBallColor(i), pathSegs))
-                }
-            }
-        }
-
         return TrajectoryResult(
             cuePathSegments = cuePreImpactSegments,
             hasGhostBall = hasGhostBall,
@@ -208,7 +176,7 @@ class TrajectoryPhysicsEngine(
             targetBallCenter = hitTargetBallPos,
             targetBallSegments = targetBallSegments,
             cuePostImpactSegments = cuePostImpactSegments,
-            multiBallPaths = multiBallPaths,
+            multiBallPaths = emptyList(),
             targetAngleRad = if (hasGhostBall) targetNormal.angle() else 0f,
             deflectionAngleRad = if (hasGhostBall) cueDeflection.angle() else 0f,
             bestPocket = bestPocket,
@@ -284,19 +252,5 @@ class TrajectoryPhysicsEngine(
         }
 
         return RailIntersection(hit, hitPoint, hitNormal, minT)
-    }
-
-    private fun getBallColor(index: Int): Int {
-        val colors = intArrayOf(
-            0xFFFFD600.toInt(), // 1/9 Yellow
-            0xFF0091EA.toInt(), // 2/10 Blue
-            0xFFFF1744.toInt(), // 3/11 Red
-            0xFFAA00FF.toInt(), // 4/12 Purple
-            0xFFFF6D00.toInt(), // 5/13 Orange
-            0xFF00E676.toInt(), // 6/14 Green
-            0xFF8D6E63.toInt(), // 7/15 Brown
-            0xFF212121.toInt()  // 8 Black
-        )
-        return colors[index % colors.size]
     }
 }

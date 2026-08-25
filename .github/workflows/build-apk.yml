@@ -28,7 +28,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK Components, NDK & CMake
+      - name: Install Android Build-Tools, Platforms, NDK & CMake
         run: |
           yes | sdkmanager --licenses || true
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
@@ -38,9 +38,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build Debug APK
+      - name: Generate Wrapper & Build Debug APK
         run: |
-          gradle assembleDebug --stacktrace --no-daemon --info
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Rename APK for Easy Download
         run: |

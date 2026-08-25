@@ -4,9 +4,10 @@ import android.graphics.Color
 import com.pool.guideline.overlay.physics.Vector2D
 import java.nio.ByteBuffer
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
+import kotlin.math.sin
 
 enum class TableFeltPreset {
     AUTO,
@@ -39,8 +40,8 @@ data class DetectionResult(
 )
 
 /**
- * High-precision collinear guideline & ball detection engine for 8-ball clone.
- * Detects the continuous chain of white dots connecting Cue Stick, Cue Ball, and Target Ring.
+ * High-performance continuous line raycaster for 8-ball clone.
+ * Detects the continuous in-game aiming guideline and determines exact cue ball, target ball, and shot vector.
  */
 class TableAndBallDetector(
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
@@ -115,129 +116,106 @@ class TableAndBallDetector(
         val tMinY = max(0, (table.yMin + 4).toInt())
         val tMaxY = min(height - 1, (table.yMax - 4).toInt())
 
-        // Step 1: Collect bright white pixels
-        val clusters = ArrayList<Vector2D>()
-        val clusterCounts = ArrayList<Int>()
-        val clusterDistSq = (ballRadius * 1.1f) * (ballRadius * 1.1f)
+        // Step 1: Scan for the continuous white in-game aim guideline
+        var bestOriginX = 0
+        var bestOriginY = 0
+        var bestAngleRad = 0f
+        var maxLineWhiteCount = 0
 
-        val step = 2
-        for (y in tMinY..tMaxY step step) {
-            val rowOffset = y * width
-            for (x in tMinX..tMaxX step step) {
-                val color = pixels[rowOffset + x]
+        val gridStep = 8
+        val angleStepDeg = 4
+        val numAngles = 360 / angleStepDeg
+
+        for (y in (tMinY + 15) until (tMaxY - 15) step gridStep) {
+            for (x in (tMinX + 15) until (tMaxX - 15) step gridStep) {
+                for (a in 0 until numAngles) {
+                    val rad = (a * angleStepDeg * Math.PI / 180.0).toFloat()
+                    val cosA = cos(rad)
+                    val sinA = sin(rad)
+
+                    var wCount = 0
+                    var d = 10.0f
+                    while (d < 180.0f) {
+                        val px = (x + cosA * d).toInt()
+                        val py = (y + sinA * d).toInt()
+                        if (px in tMinX..tMaxX && py in tMinY..tMaxY) {
+                            val color = pixels[py * width + px]
+                            val r = (color shr 16) and 0xFF
+                            val g = (color shr 8) and 0xFF
+                            val b = color and 0xFF
+                            if (r > 190 && g > 190 && b > 190 && abs(r - g) < 25 && abs(g - b) < 25) {
+                                wCount++
+                            }
+                        }
+                        d += 4.0f
+                    }
+
+                    if (wCount > maxLineWhiteCount) {
+                        maxLineWhiteCount = wCount
+                        bestOriginX = x
+                        bestOriginY = y
+                        bestAngleRad = rad
+                    }
+                }
+            }
+        }
+
+        if (maxLineWhiteCount < 12) {
+            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
+        }
+
+        // Step 2: Trace backwards and forwards along the axis to find the Cue Ball and Target Ball
+        val ux = cos(bestAngleRad)
+        val uy = sin(bestAngleRad)
+
+        var tMin = 0
+        var tMax = 0
+
+        var t = -250
+        while (t < 250) {
+            val px = (bestOriginX + ux * t).toInt()
+            val py = (bestOriginY + uy * t).toInt()
+            if (px in tMinX..tMaxX && py in tMinY..tMaxY) {
+                val color = pixels[py * width + px]
                 val r = (color shr 16) and 0xFF
                 val g = (color shr 8) and 0xFF
                 val b = color and 0xFF
-
-                if (r > 195 && g > 195 && b > 195 && abs(r - g) < 25 && abs(g - b) < 25) {
-                    var added = false
-                    for (i in clusters.indices) {
-                        val c = clusters[i]
-                        val dSq = (x - c.x) * (x - c.x) + (y - c.y) * (y - c.y)
-                        if (dSq < clusterDistSq) {
-                            val cnt = clusterCounts[i]
-                            clusters[i] = Vector2D((c.x * cnt + x) / (cnt + 1), (c.y * cnt + y) / (cnt + 1))
-                            clusterCounts[i] = cnt + 1
-                            added = true
-                            break
-                        }
-                    }
-                    if (!added) {
-                        clusters.add(Vector2D(x.toFloat(), y.toFloat()))
-                        clusterCounts.add(1)
-                    }
+                if (r > 185 && g > 185 && b > 185 && abs(r - g) < 25 && abs(g - b) < 25) {
+                    if (t < tMin) tMin = t
+                    if (t > tMax) tMax = t
                 }
             }
+            t += 4
         }
 
-        // Step 2: Filter clusters with >= 6 points
-        val validCenters = ArrayList<Vector2D>()
-        for (i in clusters.indices) {
-            if (clusterCounts[i] >= 6) {
-                validCenters.add(clusters[i])
-            }
-        }
+        val pt1 = Vector2D(bestOriginX + ux * tMin, bestOriginY + uy * tMin)
+        val pt2 = Vector2D(bestOriginX + ux * tMax, bestOriginY + uy * tMax)
 
-        if (validCenters.size < 2) {
-            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
-        }
+        // Check for cue stick texture behind pt1 vs pt2
+        var stick1 = 0
+        var stick2 = 0
+        val sampleDists = intArrayOf(18, 35, 60, 90)
 
-        // Step 3: Find the dominant collinear line of dots (The in-game aim guideline + cue axis)
-        var bestCollinear: List<Vector2D>? = null
-        var maxCollinearCount = 0
-
-        for (i in validCenters.indices) {
-            for (j in (i + 1) until validCenters.size) {
-                val p1 = validCenters[i]
-                val p2 = validCenters[j]
-                val dx = p2.x - p1.x
-                val dy = p2.y - p1.y
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist < 25f || dist > width * 0.75f) continue
-
-                val ux = dx / dist
-                val uy = dy / dist
-
-                val collinear = ArrayList<Vector2D>()
-                collinear.add(p1)
-                collinear.add(p2)
-
-                for (k in validCenters.indices) {
-                    if (k != i && k != j) {
-                        val pk = validCenters[k]
-                        val perpDist = abs((pk.x - p1.x) * uy - (pk.y - p1.y) * ux)
-                        if (perpDist < 6.0f) {
-                            collinear.add(pk)
-                        }
-                    }
-                }
-
-                if (collinear.size > maxCollinearCount) {
-                    maxCollinearCount = collinear.size
-                    bestCollinear = collinear
-                }
-            }
-        }
-
-        if (bestCollinear == null || maxCollinearCount < 3) {
-            return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
-        }
-
-        // Step 4: Sort collinear dots along axis
-        val p0 = bestCollinear[0]
-        val pLast = bestCollinear[bestCollinear.size - 1]
-        val lineVec = pLast - p0
-        val axis = lineVec.normalized()
-
-        val sorted = bestCollinear.sortedBy { (it.x - p0.x) * axis.x + (it.y - p0.y) * axis.y }
-        val end1 = sorted.first()
-        val end2 = sorted.last()
-
-        // Check for cue stick texture behind end1 vs end2
-        var stickScore1 = 0
-        var stickScore2 = 0
-        val checkDistances = intArrayOf(15, 30, 50, 75)
-
-        for (d in checkDistances) {
-            val p1x = (end1.x - axis.x * d).toInt().coerceIn(0, width - 1)
-            val p1y = (end1.y - axis.y * d).toInt().coerceIn(0, height - 1)
+        for (sd in sampleDists) {
+            val p1x = (pt1.x - ux * sd).toInt().coerceIn(0, width - 1)
+            val p1y = (pt1.y - uy * sd).toInt().coerceIn(0, height - 1)
             val col1 = pixels[p1y * width + p1x]
             val r1 = (col1 shr 16) and 0xFF
             val b1 = col1 and 0xFF
-            if (r1 > 110 && r1 > b1 * 1.2f) stickScore1++
+            if (r1 > 110 && r1 > b1 * 1.2f) stick1++
 
-            val p2x = (end2.x + axis.x * d).toInt().coerceIn(0, width - 1)
-            val p2y = (end2.y + axis.y * d).toInt().coerceIn(0, height - 1)
+            val p2x = (pt2.x + ux * sd).toInt().coerceIn(0, width - 1)
+            val p2y = (pt2.y + uy * sd).toInt().coerceIn(0, height - 1)
             val col2 = pixels[p2y * width + p2x]
             val r2 = (col2 shr 16) and 0xFF
             val b2 = col2 and 0xFF
-            if (r2 > 110 && r2 > b2 * 1.2f) stickScore2++
+            if (r2 > 110 && r2 > b2 * 1.2f) stick2++
         }
 
-        val (cuePos, targetPos, shotDir) = if (stickScore1 >= stickScore2) {
-            Triple(end1, end2, axis)
+        val (cuePos, targetPos, shotDir) = if (stick1 >= stick2) {
+            Triple(pt1, pt2, Vector2D(ux, uy))
         } else {
-            Triple(end2, end1, -axis)
+            Triple(pt2, pt1, Vector2D(-ux, -uy))
         }
 
         val cueBall = BallData(center = cuePos, radius = ballRadius, type = BallType.CUE)

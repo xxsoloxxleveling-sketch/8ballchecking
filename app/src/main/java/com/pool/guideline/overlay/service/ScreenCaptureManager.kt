@@ -33,8 +33,8 @@ class ScreenCaptureManager(
 ) {
     private val tag = "ScreenCaptureMgr"
 
-    private var processWidth = 480
-    private var processHeight = 270
+    private var processWidth = 640
+    private var processHeight = 360
 
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -54,9 +54,8 @@ class ScreenCaptureManager(
         val sHeight = if (screenHeight > 0) screenHeight else 1080
         val density = if (densityDpi > 0) densityDpi else 320
 
-        // 480x270 ensures blazing fast 60+ FPS processing with zero battery/CPU overhead
-        val scale = 480f / sWidth.toFloat()
-        processWidth = 480
+        val scale = 640f / sWidth.toFloat()
+        processWidth = 640
         processHeight = ((sHeight * scale).toInt() / 16) * 16
 
         overlayView.coordScaleX = sWidth.toFloat() / processWidth.toFloat()

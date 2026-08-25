@@ -12,15 +12,15 @@ data class TableBounds(
 ) {
     val width: Float get() = (xMax - xMin).coerceAtLeast(0f)
     val height: Float get() = (yMax - yMin).coerceAtLeast(0f)
-    val isValid: Boolean get() = width > 100f && height > 100f
+    val isValid: Boolean get() = width > 50f && height > 25f
 
     /**
-     * Estimated ball radius calibrated to standard pool table geometry (~ TableWidth / 45).
+     * Exact calibrated ball radius for standard 8-Ball Pool mobile table geometry (~ TableWidth / 73.0).
      */
-    val estimatedBallRadius: Float get() = if (isValid) (width / 45.0f).coerceIn(12f, 40f) else 20f
+    val estimatedBallRadius: Float get() = if (isValid) (width / 73.0f).coerceIn(6f, 35f) else 10f
 
     /**
-     * Returns the 6 standard pocket locations.
+     * Returns the 6 standard pocket locations along the cushion inner boundaries.
      */
     fun getPockets(ballRadius: Float): List<Pocket> {
         if (!isValid) return emptyList()

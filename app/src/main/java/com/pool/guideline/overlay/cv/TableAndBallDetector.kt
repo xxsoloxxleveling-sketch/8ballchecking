@@ -39,8 +39,9 @@ data class DetectionResult(
 )
 
 /**
- * Cue-Anchored Collinear Aiming Engine for Mock Pool.
- * Detects the active in-game aiming guideline anchored strictly to the Cue Ball.
+ * High-Precision Cue-Anchored Aiming Engine for Mock Pool.
+ * Features a dual-ended Wood-Texture Polarity Discriminator to ensure the aim vector
+ * always shoots forward into the table felt and never backward along the cue stick.
  */
 class TableAndBallDetector(
     var feltPreset: TableFeltPreset = TableFeltPreset.AUTO
@@ -115,10 +116,10 @@ class TableAndBallDetector(
         val tMinY = max(0, (table.yMin + 4).toInt())
         val tMaxY = min(height - 1, (table.yMax - 4).toInt())
 
-        // Step 1: Collect bright white guideline & ball pixels (R>210, G>210, B>210)
+        // Step 1: Collect bright white pixels
         val clusters = ArrayList<Vector2D>()
         val clusterCounts = ArrayList<Int>()
-        val clusterDistSq = (ballRadius * 1.1f) * (ballRadius * 1.1f)
+        val clusterDistSq = (ballRadius * 1.0f) * (ballRadius * 1.0f)
 
         val step = 2
         for (y in tMinY..tMaxY step step) {
@@ -181,7 +182,7 @@ class TableAndBallDetector(
                 }
             }
 
-            if (totalSamples > 0 && (whiteHits.toFloat() / totalSamples.toFloat()) >= 0.45f) {
+            if (totalSamples > 0 && (whiteHits.toFloat() / totalSamples.toFloat()) >= 0.40f) {
                 cueCandidates.add(c)
             }
         }
@@ -190,7 +191,7 @@ class TableAndBallDetector(
             return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
         }
 
-        // Step 3: Find Collinear Line ANCHORED STRICTLY TO A CUE BALL CANDIDATE
+        // Step 3: Find the Collinear Aiming Axis Passing through the Cue Ball
         var bestCue: Vector2D? = null
         var bestTarget: Vector2D? = null
         var bestShotDir = Vector2D.ZERO
@@ -214,11 +215,7 @@ class TableAndBallDetector(
                     if (other !== cue && other !== p) {
                         val perpDist = abs((other.x - cue.x) * uy - (other.y - cue.y) * ux)
                         if (perpDist < 6.0f) {
-                            // Ensure it is in the forward direction of the ray
-                            val proj = (other.x - cue.x) * ux + (other.y - cue.y) * uy
-                            if (proj > 0f) {
-                                inliers.add(other)
-                            }
+                            inliers.add(other)
                         }
                     }
                 }
@@ -226,9 +223,48 @@ class TableAndBallDetector(
                 if (inliers.size > maxInliers) {
                     maxInliers = inliers.size
                     bestCue = cue
-                    val sorted = inliers.sortedBy { (it.x - cue.x) * ux + (it.y - cue.y) * uy }
-                    bestTarget = sorted.last()
-                    bestShotDir = Vector2D(ux, uy)
+
+                    // Step 4: Wood-Texture Polarity Discriminator
+                    // Check texture behind -u vs ahead of +u to establish true forward shot vector
+                    var stickScoreForward = 0
+                    var stickScoreBackward = 0
+                    val sampleDists = intArrayOf(20, 45, 75, 110, 150)
+
+                    for (d in sampleDists) {
+                        val fwdX = (cue.x + ux * d).toInt().coerceIn(0, width - 1)
+                        val fwdY = (cue.y + uy * d).toInt().coerceIn(0, height - 1)
+                        val colFwd = pixels[fwdY * width + fwdX]
+                        val rFwd = (colFwd shr 16) and 0xFF
+                        val bFwd = colFwd and 0xFF
+                        if (rFwd > 110 && rFwd > bFwd * 1.25f) stickScoreForward++
+
+                        val bwdX = (cue.x - ux * d).toInt().coerceIn(0, width - 1)
+                        val bwdY = (cue.y - uy * d).toInt().coerceIn(0, height - 1)
+                        val colBwd = pixels[bwdY * width + bwdX]
+                        val rBwd = (colBwd shr 16) and 0xFF
+                        val bBwd = colBwd and 0xFF
+                        if (rBwd > 110 && rBwd > bBwd * 1.25f) stickScoreBackward++
+                    }
+
+                    // True shot vector points AWAY from the stick
+                    val trueDir = if (stickScoreForward > stickScoreBackward) {
+                        Vector2D(-ux, -uy)
+                    } else {
+                        Vector2D(ux, uy)
+                    }
+
+                    // Sort inliers along trueDir (forward direction)
+                    val forwardInliers = inliers.filter {
+                        val proj = (it.x - cue.x) * trueDir.x + (it.y - cue.y) * trueDir.y
+                        proj > ballRadius * 0.8f
+                    }.sortedBy { (it.x - cue.x) * trueDir.x + (it.y - cue.y) * trueDir.y }
+
+                    bestTarget = if (forwardInliers.isNotEmpty()) {
+                        forwardInliers.last()
+                    } else {
+                        cue + (trueDir * (ballRadius * 12f))
+                    }
+                    bestShotDir = trueDir
                 }
             }
         }
@@ -237,13 +273,18 @@ class TableAndBallDetector(
             return DetectionResult(tableBounds = table, frameWidth = width, frameHeight = height)
         }
 
+        // Clamp target inside table boundaries
+        val clampedTargetX = bestTarget.x.coerceIn(table.xMin + ballRadius, table.xMax - ballRadius)
+        val clampedTargetY = bestTarget.y.coerceIn(table.yMin + ballRadius, table.yMax - ballRadius)
+        val finalTarget = Vector2D(clampedTargetX, clampedTargetY)
+
         val cueBall = BallData(center = bestCue, radius = ballRadius, type = BallType.CUE)
-        val targetBalls = listOf(BallData(center = bestTarget, radius = ballRadius, type = BallType.OBJECT_SOLID))
+        val targetBalls = listOf(BallData(center = finalTarget, radius = ballRadius, type = BallType.OBJECT_SOLID))
 
         return DetectionResult(
             tableBounds = table,
             cueBall = cueBall,
-            targetRingPos = bestTarget,
+            targetRingPos = finalTarget,
             targetBalls = targetBalls,
             rawContours = emptyList(),
             aimDirection = bestShotDir,

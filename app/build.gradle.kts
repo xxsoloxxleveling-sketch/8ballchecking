@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.pool.guideline.overlay"
     compileSdk = 35
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.pool.guideline.overlay"
@@ -50,6 +51,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 

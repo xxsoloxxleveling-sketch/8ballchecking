@@ -53,10 +53,9 @@ data class DetectionResult(
  * High-Precision Computer Vision Engine for Mock Pool.
  * Features:
  * 1. Persistent normalized 4-corner table calibration.
- * 2. Unoriented collinear axis fitting.
- * 3. Robust polarity resolution (boundary probing + wood cue stick rejection).
- * 4. Sub-pixel linear regression along forward aim dots for perfect slope alignment.
- * 5. Radial object ball detection around the ghost ring for 100% accurate cut angle physics.
+ * 2. Unmistakable Cue Ball Identification by detecting the attached cue stick shaft behind the ball.
+ * 3. Sub-pixel linear regression along forward aim dots for 100% collinear alignment.
+ * 4. Radial object ball detection around the ghost ring for true physical cut angle calculation.
  */
 class TableAndBallDetector(
     private val context: Context,
@@ -138,7 +137,7 @@ class TableAndBallDetector(
         // Step 2: Collect bright white guideline dots and ball features
         val clusters = ArrayList<Vector2D>()
         val clusterCounts = ArrayList<Int>()
-        val clusterDistSq = (ballRadius * 0.9f) * (ballRadius * 0.9f)
+        val clusterDistSq = (ballRadius * 0.85f) * (ballRadius * 0.85f)
 
         val step = 2
         for (y in tMinY..tMaxY step step) {
@@ -174,7 +173,7 @@ class TableAndBallDetector(
             return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Step 3: Locate Cue Ball Candidate
+        // Step 3: Locate Cue Ball Candidates (Dense white regions)
         val cueCandidates = ArrayList<Vector2D>()
         val radInt = (ballRadius * 0.65f).toInt().coerceAtLeast(3)
 
@@ -194,14 +193,14 @@ class TableAndBallDetector(
                         val r = (color shr 16) and 0xFF
                         val g = (color shr 8) and 0xFF
                         val b = color and 0xFF
-                        if (r > 190 && g > 190 && b > 190) {
+                        if (r > 185 && g > 185 && b > 185) {
                             whiteHits++
                         }
                     }
                 }
             }
 
-            if (totalSamples > 0 && (whiteHits.toFloat() / totalSamples.toFloat()) >= 0.35f) {
+            if (totalSamples > 0 && (whiteHits.toFloat() / totalSamples.toFloat()) >= 0.30f) {
                 cueCandidates.add(c)
             }
         }
@@ -210,55 +209,71 @@ class TableAndBallDetector(
             return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Step 4: Fit Collinear Axis and evaluate candidate with most inliers
+        // Step 4: Evaluate candidates and identify TRUE Cue Ball by presence of Cue Stick shaft behind it
         var bestFit: AxisFitResult? = null
-        var bestFitInliers: List<Vector2D> = emptyList()
-        var maxInliersCount = 0
+        var bestResolved: ResolvedAim? = null
+        var bestForwardInliers: List<Vector2D> = emptyList()
+        var bestCandidateScore = -1f
 
         for (cue in cueCandidates) {
-            val fit = fitCollinearAxis(clusters, cue, width * 0.75f, ballRadius)
-            if (fit != null) {
-                val inliers = clusters.filter {
-                    val perpDist = abs((it.x - cue.x) * fit.axisDir.y - (it.y - cue.y) * fit.axisDir.x)
-                    perpDist < 6.0f
-                }
-                if (inliers.size > maxInliersCount) {
-                    maxInliersCount = inliers.size
-                    bestFit = fit
-                    bestFitInliers = inliers
-                }
+            val fit = fitCollinearAxis(clusters, cue, width * 0.75f, ballRadius) ?: continue
+
+            val inliers = clusters.filter {
+                val perpDist = abs((it.x - cue.x) * fit.axisDir.y - (it.y - cue.y) * fit.axisDir.x)
+                perpDist < 6.0f
+            }
+            if (inliers.size < 3) continue
+
+            // Resolve forward direction for this candidate
+            val resolved = AimDirectionResolver.resolveForwardDirection(
+                cueBallPos = cue,
+                axisDir = fit.axisDir,
+                tableBounds = table,
+                pixels = pixels,
+                width = width,
+                height = height
+            ) ?: continue
+
+            // Count forward inliers strictly in front of the ball
+            val forwardInliers = inliers.filter {
+                val proj = (it.x - cue.x) * resolved.forwardDir.x + (it.y - cue.y) * resolved.forwardDir.y
+                proj > ballRadius * 0.8f
+            }
+
+            // Score candidate: Huge bonus (+1000) if cue stick texture is attached behind it
+            var score = forwardInliers.size.toFloat()
+            if (resolved.resolutionMethod.startsWith("texture_reject")) {
+                score += 1000f
+            }
+
+            if (score > bestCandidateScore) {
+                bestCandidateScore = score
+                bestFit = fit
+                bestResolved = resolved
+                bestForwardInliers = forwardInliers
             }
         }
 
-        if (bestFit == null || maxInliersCount < 3) {
+        if (bestFit == null || bestResolved == null || bestForwardInliers.isEmpty()) {
             return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        // Step 5: Resolve True Forward Aim Polarity
-        val resolved = AimDirectionResolver.resolveForwardDirection(
-            cueBallPos = bestFit.cueBallPos,
-            axisDir = bestFit.axisDir,
-            tableBounds = table,
-            pixels = pixels,
-            width = width,
-            height = height
-        ) ?: return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
+        val cueBallPos = bestFit.cueBallPos
+        val resolved = bestResolved
 
-        // Step 6: Extract Forward Aim Dots & Perform Sub-Pixel Line Regression
-        val forwardInliers = bestFitInliers.filter {
-            val proj = (it.x - bestFit.cueBallPos.x) * resolved.forwardDir.x + (it.y - bestFit.cueBallPos.y) * resolved.forwardDir.y
-            proj > ballRadius * 0.8f
-        }.sortedBy { (it.x - bestFit.cueBallPos.x) * resolved.forwardDir.x + (it.y - bestFit.cueBallPos.y) * resolved.forwardDir.y }
+        // Step 5: Sub-Pixel Linear Regression along Forward Aim Inliers
+        val sortedForwardInliers = bestForwardInliers.sortedBy {
+            (it.x - cueBallPos.x) * resolved.forwardDir.x + (it.y - cueBallPos.y) * resolved.forwardDir.y
+        }
 
-        // Refine aim direction using linear regression across forward aim dots to remove cue stick ferrule tilt
         var accurateAimDir = resolved.forwardDir
-        if (forwardInliers.size >= 2) {
+        if (sortedForwardInliers.size >= 2) {
             var sumDx2 = 0.0
             var sumDxDy = 0.0
             var sumDy2 = 0.0
-            for (p in forwardInliers) {
-                val dx = (p.x - bestFit.cueBallPos.x).toDouble()
-                val dy = (p.y - bestFit.cueBallPos.y).toDouble()
+            for (p in sortedForwardInliers) {
+                val dx = (p.x - cueBallPos.x).toDouble()
+                val dy = (p.y - cueBallPos.y).toDouble()
                 sumDx2 += dx * dx
                 sumDxDy += dx * dy
                 sumDy2 += dy * dy
@@ -266,28 +281,24 @@ class TableAndBallDetector(
             if (sumDx2 + sumDy2 > 1e-4) {
                 val len = sqrt(sumDx2 + sumDy2)
                 val fitDir = Vector2D((sumDx2 / len).toFloat(), (sumDxDy / len).toFloat()).normalized()
-                if (fitDir.dot(resolved.forwardDir) > 0.6f) {
+                if (fitDir.dot(resolved.forwardDir) > 0.5f) {
                     accurateAimDir = fitDir
                 }
             }
         }
 
-        val ghostBallPos = if (forwardInliers.isNotEmpty()) {
-            forwardInliers.last()
-        } else {
-            bestFit.cueBallPos + (accurateAimDir * (ballRadius * 12f))
-        }
+        val ghostBallPos = sortedForwardInliers.last()
 
-        // Step 7: Locate the adjacent Object Ball around the Ghost Ring for true cut angle
+        // Step 6: Locate the physical Object Ball around the Ghost Ring for true cut angle
         val objectBallPos = findAdjacentObjectBall(ghostBallPos, accurateAimDir, ballRadius, pixels, width, height)
 
-        // Step 8: Validate Target Endpoint within table bounds
+        // Step 7: Validate Target Endpoint within table bounds
         val validTarget = isValidTarget(ghostBallPos, table, ballRadius)
         if (!validTarget) {
             return DetectionResult(tableBounds = table, isTableCalibrated = true, frameWidth = width, frameHeight = height)
         }
 
-        val cueBall = BallData(center = bestFit.cueBallPos, radius = ballRadius, type = BallType.CUE)
+        val cueBall = BallData(center = cueBallPos, radius = ballRadius, type = BallType.CUE)
         val targetBalls = listOf(BallData(center = objectBallPos, radius = ballRadius, type = BallType.OBJECT_SOLID))
 
         return DetectionResult(
@@ -322,9 +333,9 @@ class TableAndBallDetector(
         var bestAngle = 0f
         var maxNonFeltHits = 0
 
-        // Scan 16 radial directions around ghost ball
-        for (step in 0 until 16) {
-            val angle = (step * 2.0 * Math.PI / 16.0).toFloat()
+        // Scan 24 radial directions around ghost ball
+        for (step in 0 until 24) {
+            val angle = (step * 2.0 * Math.PI / 24.0).toFloat()
             val dx = cos(angle)
             val dy = sin(angle)
 
@@ -339,10 +350,8 @@ class TableAndBallDetector(
             val g = (col shr 8) and 0xFF
             val b = col and 0xFF
 
-            // Check if non-felt (e.g. black 8-ball, red/yellow solids, dark edges)
             val isFelt = (b > 120 && g > 105 && b > r * 1.12f)
             if (!isFelt) {
-                // Count non-felt cluster in local 3x3 patch
                 var nonFeltPatch = 0
                 for (oy in -2..2 step 2) {
                     for (ox in -2..2 step 2) {
@@ -370,7 +379,6 @@ class TableAndBallDetector(
                 ghostPos.y + sin(bestAngle) * searchRadius
             )
         } else {
-            // Default: Object ball directly in front along aim direction
             ghostPos + (aimDir * searchRadius)
         }
     }

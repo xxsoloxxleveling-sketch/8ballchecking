@@ -128,6 +128,7 @@ class ScreenCaptureManager(
         )
 
         overlayView.isTableCalibrated = detection.isTableCalibrated
+        OverlayService.instance?.setOverlayTouchable(!detection.isTableCalibrated)
 
         if (!detection.isTableCalibrated) {
             overlayView.updateTrajectory(TrajectoryResult.EMPTY, detection.tableBounds, emptyList(), emptyList())

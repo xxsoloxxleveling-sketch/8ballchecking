@@ -20,7 +20,9 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.pool.guideline.overlay.MainActivity
 import com.pool.guideline.overlay.R
+import com.pool.guideline.overlay.cv.TableBoundsCalibration
 import com.pool.guideline.overlay.cv.TableFeltPreset
+import com.pool.guideline.overlay.ui.CalibrationActivity
 import com.pool.guideline.overlay.ui.OverlayCanvasView
 
 /**
@@ -51,12 +53,16 @@ class OverlayService : Service() {
 
         var isRunning = false
             private set
+
+        var instance: OverlayService? = null
+            private set
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Log.i(tag, "OverlayService onCreate - Starting Foreground immediately")
         createNotificationChannel()
         startAsForegroundService()
@@ -125,6 +131,8 @@ class OverlayService : Service() {
             showFps = true
         }
 
+        val isCalibrated = TableBoundsCalibration.getTableBounds(this) != null
+
         val layoutParams = WindowManager.LayoutParams().apply {
             type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -132,10 +140,17 @@ class OverlayService : Service() {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             }
-            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            // If not calibrated, allow touch events so tapping prompt opens calibration
+            flags = if (!isCalibrated) {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            }
 
             format = PixelFormat.TRANSLUCENT
             width = WindowManager.LayoutParams.MATCH_PARENT
@@ -143,6 +158,27 @@ class OverlayService : Service() {
         }
 
         windowManager?.addView(overlayView, layoutParams)
+    }
+
+    fun setOverlayTouchable(touchable: Boolean) {
+        val view = overlayView ?: return
+        val wm = windowManager ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        val targetFlags = if (touchable) {
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        } else {
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        }
+
+        if (params.flags != targetFlags) {
+            params.flags = targetFlags
+            wm.updateViewLayout(view, params)
+        }
     }
 
     private fun startScreenCapture(resultCode: Int, resultData: Intent) {
@@ -197,6 +233,16 @@ class OverlayService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val calibrateIntent = Intent(this, CalibrationActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingCalibrate = PendingIntent.getActivity(
+            this,
+            2,
+            calibrateIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val stopIntent = Intent(this, OverlayService::class.java).apply {
             action = ACTION_STOP
         }
@@ -212,6 +258,7 @@ class OverlayService : Service() {
             .setContentText("Real-time AI trajectory overlay is running")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingMain)
+            .addAction(android.R.drawable.ic_menu_edit, "Calibrate Table", pendingCalibrate)
             .addAction(android.R.drawable.ic_delete, "Stop Overlay", pendingStop)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -222,6 +269,7 @@ class OverlayService : Service() {
         super.onDestroy()
         Log.i(tag, "OverlayService onDestroy - Cleaning up resources")
         isRunning = false
+        instance = null
 
         captureManager?.stopCapture()
         captureManager = null
